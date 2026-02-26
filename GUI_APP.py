@@ -1158,6 +1158,7 @@ class TestStationInterface(QMainWindow):
         self.excel_logger = excel_logger
         self.setWindowTitle("Test Station Interface")
         self.config = ''
+        self.assembly_suffix = None
 
         # Set minimum size instead of fixed geometry
         self.setMinimumSize(1000, 700)
@@ -1311,9 +1312,11 @@ class TestStationInterface(QMainWindow):
                 return suffix
         return None
 
-    def load_config(self):
+    def load_config(self, suffix):
         try:
-            with open(r'C:\Config\config.json') as f:
+            if suffix is None:
+                raise ValueError("Assembly suffix is not set; cannot determine config path.")
+            with open(rf'C:\Config\{suffix}\config.json') as f:
                 return json.load(f)
         except Exception as e:
             # logger.error(f"Error loading config: {str(e)}")
@@ -1868,6 +1871,7 @@ class TestStationInterface(QMainWindow):
             QApplication.processEvents()  # Update UI
 
             assembly_suffix = self._extract_assembly_suffix(assembly_part_number)
+            self.assembly_suffix = assembly_suffix
             if assembly_suffix:
                 self.append_console_message(f"Using configuration for assembly suffix: {assembly_suffix}\n")
                 if self.config_transfer(assembly_suffix) == False:
@@ -2945,7 +2949,7 @@ class TestStationInterface(QMainWindow):
             status = val[3]
             # Find the table for this zone
             table = self._measurement_tables.get(zone_name)
-            self.config1 = self.load_config()
+            self.config1 = self.load_config(self.assembly_suffix)
 
             if not table:
                 self._log_resistance_message(f"No table found for zone {zone_name}", is_error=True)
@@ -3222,7 +3226,7 @@ class TestStationInterface(QMainWindow):
             status = val[5]
             # Find the table for this zone
             table = self._measurement_tables_imp.get(zone_name)
-            self.config2 = self.load_config()
+            self.config2 = self.load_config(self.assembly_suffix)
 
             if not table:
                 self._log_Impedance_message(f"No table found for zone {zone_name}", is_error=True)
