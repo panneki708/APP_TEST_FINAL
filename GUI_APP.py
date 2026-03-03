@@ -3060,21 +3060,7 @@ class TestStationInterface(QMainWindow):
             frequency = selected_freq.split()[0]
             freq_suffix = ExcelLogger._freq_to_sheet_suffix(selected_freq)
             if selected_freq == "60 MHz":
-                sweep1 = self.sweep1_input.text().strip()
-                sweep2 = self.sweep2_input.text().strip()
-                if not sweep1 or not sweep2:
-                    self._log_Impedance_message("ERROR: Sweep Start and Sweep Stop values are required for 60 MHz", is_error=True)
-                    return
-                try:
-                    s1_val = float(sweep1)
-                    s2_val = float(sweep2)
-                except ValueError:
-                    self._log_Impedance_message("ERROR: Sweep Start and Sweep Stop must be numeric values", is_error=True)
-                    return
-                if s1_val >= s2_val:
-                    self._log_Impedance_message("ERROR: Sweep Start must be less than Sweep Stop", is_error=True)
-                    return
-                command = f"{zone_name} {sweep1} {sweep2}"
+                command = f"{zone_name} 50000 70000"
             else:
                 command = f"{zone_name} {frequency}"
 
@@ -3738,35 +3724,7 @@ class TestStationInterface(QMainWindow):
             control_layout.addWidget(freq_label)
             control_layout.addWidget(self.freq_combo)
 
-            # Sweep start/stop fields (visible only when 60 MHz is selected)
-            self.sweep1_label = QLabel("Sweep Start:")
-            self.sweep1_label.setFont(QFont('Arial', 10))
-            self.sweep1_input = QLineEdit("50000")
-            self.sweep1_input.setPlaceholderText("e.g. 1000000")
-            self.sweep1_input.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            self.sweep2_label = QLabel("Sweep Stop:")
-            self.sweep2_label.setFont(QFont('Arial', 10))
-            self.sweep2_input = QLineEdit("70000")
-            self.sweep2_input.setPlaceholderText("e.g. 60000000")
-            self.sweep2_input.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            control_layout.addWidget(self.sweep1_label)
-            control_layout.addWidget(self.sweep1_input)
-            control_layout.addWidget(self.sweep2_label)
-            control_layout.addWidget(self.sweep2_input)
             control_layout.addStretch()
-
-            # Show/hide sweep fields based on frequency selection
-            def _on_freq_changed(_):
-                is_60mhz = self.freq_combo.currentText() == "60 MHz"
-                self.sweep1_label.setVisible(is_60mhz)
-                self.sweep1_input.setVisible(is_60mhz)
-                self.sweep2_label.setVisible(is_60mhz)
-                self.sweep2_input.setVisible(is_60mhz)
-
-            self.freq_combo.currentIndexChanged.connect(_on_freq_changed)
-            _on_freq_changed(self.freq_combo.currentIndex())  # Initialize visibility
 
             impedance_layout.addWidget(control_panel)
 
