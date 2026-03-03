@@ -167,8 +167,12 @@ class ExcelLogger:
 
             sheet = self.workbook[sheet_name]
 
-            # Clear all data except headers (assuming headers are in row 1)
-            if sheet.max_row > 1:
+            # "Unit Setup" has no header row, so clear from row 1;
+            # all other sheets keep the header in row 1.
+            if sheet_name == "Unit Setup":
+                if sheet.max_row >= 1:
+                    sheet.delete_rows(1, sheet.max_row)
+            elif sheet.max_row > 1:
                 sheet.delete_rows(2, sheet.max_row)  # Delete from row 2 to end
 
             # Reapply headers based on sheet type
