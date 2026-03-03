@@ -4060,6 +4060,12 @@ class TestStationInterface(QMainWindow):
             self.fan_interlock = 30
 
             if hasattr(self, 'worker') and self.worker:
+                try:
+                    self.worker.output_ready.disconnect(self.handle_interlock_output)
+                    self.worker.finished_signal.disconnect(self.on_interlock_test_finished)
+                    self.worker.error_occurred.disconnect(self.handle_interlock_error)
+                except (TypeError, RuntimeError):
+                    pass
                 self.worker.stop()
 
             # Reset UI state
