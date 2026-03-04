@@ -10,12 +10,13 @@ from PyQt5.QtWidgets import (
     QGroupBox, QTabWidget, QScrollArea, QProgressBar,
     QTextBrowser, QFrame, QSizePolicy, QMessageBox, QSpacerItem,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
-    QPlainTextEdit
+    QPlainTextEdit, QInputDialog, QFileDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QDate, QThread, QTimer
 from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtWidgets import QDateEdit
 import os
+import stat
 import logging
 from logging.handlers import RotatingFileHandler
 from openpyxl import Workbook
@@ -424,6 +425,13 @@ class ExcelLogger:
                     self.workbook = load_workbook(self.file_path)
                     self.logger1.info(f"Renamed file to: {new_file_path}",
                                       extra={'func_name': 'update_overall_result'})
+
+            # Make the result file read-only so it cannot be edited after the test run
+            if os.path.exists(self.file_path):
+                os.chmod(self.file_path,
+                         stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+                self.logger1.info(f"Set file as read-only: {self.file_path}",
+                                  extra={'func_name': 'update_overall_result'})
 
             return True
 
@@ -1227,6 +1235,59 @@ class SshConsoleWorker(QThread):
                 self._ssh = None
         except Exception as exc:
             logger.debug(f"SshConsoleWorker cleanup: {exc}")
+
+
+class ScpWorker(QThread):
+    """Worker thread for SFTP file upload / download (SCP-like)."""
+    progress = pyqtSignal(str)   # status / progress messages
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, host, port, username, password,
+                 direction, local_path, remote_path):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        # direction: 'upload'  → local → remote
+        #            'download' → remote → local
+        self.direction = direction
+        self.local_path = local_path
+        self.remote_path = remote_path
+
+    def run(self):
+        transport = None
+        try:
+            transport = paramiko.Transport((self.host, self.port))
+            transport.connect(username=self.username, password=self.password)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+
+            if self.direction == 'upload':
+                self.progress.emit(
+                    f"[SCP] Uploading  {self.local_path}  →  {self.remote_path} …"
+                )
+                sftp.put(self.local_path, self.remote_path,
+                         callback=self._sftp_callback)
+                sftp.close()
+                self.finished.emit(True, f"[SCP] Upload complete: {self.remote_path}")
+            else:
+                self.progress.emit(
+                    f"[SCP] Downloading  {self.remote_path}  →  {self.local_path} …"
+                )
+                sftp.get(self.remote_path, self.local_path,
+                         callback=self._sftp_callback)
+                sftp.close()
+                self.finished.emit(True, f"[SCP] Download complete: {self.local_path}")
+        except Exception as exc:
+            self.finished.emit(False, f"[SCP] Error: {exc}")
+        finally:
+            if transport:
+                transport.close()
+
+    def _sftp_callback(self, transferred, total):
+        if total > 0:
+            pct = int(transferred * 100 / total)
+            self.progress.emit(f"\r[SCP] {pct}%  ({transferred}/{total} bytes)")
 
 
 class TerminalWidget(QPlainTextEdit):
@@ -4975,6 +5036,29 @@ class TestStationInterface(QMainWindow):
         layout.addLayout(status_bar)
         layout.addWidget(self._ssh_console_output, stretch=1)
 
+        # ── SCP file transfer bar ─────────────────────────────────────────
+        scp_bar = QHBoxLayout()
+        scp_bar.setSpacing(6)
+
+        self._scp_upload_btn = QPushButton("⬆  Upload to RPI")
+        self._scp_upload_btn.setStyleSheet(
+            "background-color: #17a2b8; color: white; padding: 4px 12px;"
+        )
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_upload_btn.clicked.connect(self._scp_upload)
+        scp_bar.addWidget(self._scp_upload_btn)
+
+        self._scp_download_btn = QPushButton("⬇  Download from RPI")
+        self._scp_download_btn.setStyleSheet(
+            "background-color: #6610f2; color: white; padding: 4px 12px;"
+        )
+        self._scp_download_btn.setEnabled(False)
+        self._scp_download_btn.clicked.connect(self._scp_download)
+        scp_bar.addWidget(self._scp_download_btn)
+
+        scp_bar.addStretch()
+        layout.addLayout(scp_bar)
+
         # Hint bar
         hint = QLabel(
             "Click terminal then type directly  |  "
@@ -4984,6 +5068,7 @@ class TestStationInterface(QMainWindow):
         layout.addWidget(hint)
 
         self._ssh_console_worker = None
+        self._scp_worker = None
         return tab
 
     def _ssh_console_connect(self):
@@ -5022,6 +5107,8 @@ class TestStationInterface(QMainWindow):
         )
         self._ssh_connect_btn.setEnabled(False)
         self._ssh_disconnect_btn.setEnabled(True)
+        self._scp_upload_btn.setEnabled(True)
+        self._scp_download_btn.setEnabled(True)
         self._ssh_console_output.set_send_fn(self._ssh_console_worker.send_command)
         self._ssh_console_output.setFocus()
 
@@ -5033,11 +5120,103 @@ class TestStationInterface(QMainWindow):
         )
         self._ssh_connect_btn.setEnabled(True)
         self._ssh_disconnect_btn.setEnabled(False)
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_download_btn.setEnabled(False)
         self._ssh_console_output.set_send_fn(None)
 
     def _ssh_console_on_error(self, msg):
         self._ssh_console_output.write(f'\n[ERROR] {msg}\n')
         self._ssh_console_on_disconnected()
+
+    # ------------------------------------------------------------------
+    # SCP file transfer
+    # ------------------------------------------------------------------
+    def _scp_upload(self):
+        """Let the user pick a local file and upload it to the RPI."""
+        local_path, _ = QFileDialog.getOpenFileName(
+            self, "Select file to upload to RPI"
+        )
+        if not local_path:
+            return
+        remote_path, ok = QInputDialog.getText(
+            self, "Remote destination path",
+            "Remote path on RPI (e.g. /home/robot/file.txt):",
+            QLineEdit.Normal,
+            f"/home/{self.ssh_handler.username}/{os.path.basename(local_path)}"
+        )
+        if not ok or not remote_path.strip():
+            return
+        self._run_scp_worker('upload', local_path, remote_path.strip())
+
+    def _scp_download(self):
+        """Let the user specify a remote file and save it locally."""
+        remote_path, ok = QInputDialog.getText(
+            self, "Remote source path",
+            "Remote path on RPI to download (e.g. /home/robot/file.txt):",
+            QLineEdit.Normal,
+            f"/home/{self.ssh_handler.username}/"
+        )
+        if not ok or not remote_path.strip():
+            return
+        local_path, _ = QFileDialog.getSaveFileName(
+            self, "Save downloaded file as",
+            os.path.basename(remote_path.strip())
+        )
+        if not local_path:
+            return
+        self._run_scp_worker('download', local_path, remote_path.strip())
+
+    def _run_scp_worker(self, direction, local_path, remote_path):
+        """Start a ScpWorker for the given direction."""
+        if self._scp_worker and self._scp_worker.isRunning():
+            QMessageBox.information(self, "SCP Busy",
+                                    "A file transfer is already in progress.")
+            return
+        h = self.ssh_handler
+        self._scp_worker = ScpWorker(
+            h.host, h.port, h.username, h.password,
+            direction, local_path, remote_path
+        )
+        self._scp_worker.progress.connect(self._ssh_console_output.write)
+        self._scp_worker.finished.connect(self._on_scp_finished)
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_download_btn.setEnabled(False)
+        self._scp_worker.start()
+
+    def _on_scp_finished(self, success, message):
+        self._ssh_console_output.write('\n' + message + '\n')
+        # Re-enable SCP buttons only when still connected
+        if self._ssh_console_worker and self._ssh_console_worker.isRunning():
+            self._scp_upload_btn.setEnabled(True)
+            self._scp_download_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # RPI Console tab password gate
+    # ------------------------------------------------------------------
+    _RPI_CONSOLE_PASSWORD = "lam@rpi"
+
+    def _on_tab_changed(self, index):
+        """Guard the RPI Console tab with a password prompt."""
+        if index != self._RPI_CONSOLE_TAB_INDEX:
+            # Remember this as the last accessible tab
+            self._last_tab_index = index
+            return
+        if self._rpi_console_unlocked:
+            return
+        pwd, ok = QInputDialog.getText(
+            self, "RPI Console – Access Required",
+            "Enter password to open the RPI Console:",
+            QLineEdit.Password
+        )
+        if ok and pwd == self._RPI_CONSOLE_PASSWORD:
+            self._rpi_console_unlocked = True
+        else:
+            if ok:  # wrong password was entered
+                QMessageBox.warning(self, "Access Denied", "Incorrect password.")
+            # Switch back to the previous tab without re-triggering the guard
+            self.tab_widget.blockSignals(True)
+            self.tab_widget.setCurrentIndex(self._last_tab_index)
+            self.tab_widget.blockSignals(False)
 
     def init_ui(self):
         """Initialize the user interface with responsive layouts"""
@@ -5063,6 +5242,12 @@ class TestStationInterface(QMainWindow):
         self.tab_widget.addTab(self.create_test_tab("DIMM Calibration"), "DIMM Cal")
         self.tab_widget.addTab(self.create_test_tab("VNA Calibration"), "VNA Cal")
         self.tab_widget.addTab(self.create_ssh_console_tab(), "RPI Console")
+
+        # RPI Console tab is the last tab; guard it with a password
+        self._RPI_CONSOLE_TAB_INDEX = self.tab_widget.count() - 1
+        self._rpi_console_unlocked = False
+        self._last_tab_index = 0
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         # Set the central widget
         main_scroll.setWidget(central_widget)
