@@ -3341,6 +3341,15 @@ class TestStationInterface(QMainWindow):
         # self._log_resistance_message(f"{line}")
         # self._log_Impedance_message(f"{line}")
         # self._log_Impedance_message(self.names1)
+        if "pyvisa.errors" in line:
+            QMessageBox.critical(
+                self,
+                "PyVISA Error",
+                f"A PyVISA error occurred: {line.strip()}"
+            )
+            self.worker.stop()
+            return
+
         if self.names1 in line:
             self._log_Impedance_message(f"Starting measurement for {line}")
 
@@ -3472,6 +3481,15 @@ class TestStationInterface(QMainWindow):
 
     def handle_Zone_output(self, line):
         # self._log_resistance_message(f"{line}")
+        if "pyvisa.errors" in line:
+            QMessageBox.critical(
+                self,
+                "PyVISA Error",
+                f"A PyVISA error occurred: {line.strip()}"
+            )
+            self.worker.stop()
+            return
+
         if "no ping" in line:
             self._log_Impedance_message(f"DIMM not connected to the Network", is_error=True)
             self.worker.stop()
