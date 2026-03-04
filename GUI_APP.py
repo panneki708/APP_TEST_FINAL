@@ -1,4 +1,5 @@
 import sys
+import socket
 import paramiko
 import re
 import json
@@ -1154,6 +1155,79 @@ class Worker(QThread):
     def cleanup(self):
         if hasattr(self.ssh_handler, 'SSH_disconnect'):
             self.ssh_handler.SSH_disconnect()
+
+
+class SshConsoleWorker(QThread):
+    """Worker thread that opens an interactive SSH shell and streams output."""
+    output_ready = pyqtSignal(str)
+    connected = pyqtSignal()
+    disconnected = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    _ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[\(\)].')
+
+    def __init__(self, host, port, username, password):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self._is_running = False
+        self._channel = None
+        self._channel_lock = __import__('threading').Lock()
+        self._ssh = None
+
+    def run(self):
+        self._is_running = True
+        try:
+            self._ssh = paramiko.SSHClient()
+            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self._ssh.connect(
+                self.host, self.port, self.username, self.password, timeout=10
+            )
+            with self._channel_lock:
+                self._channel = self._ssh.invoke_shell(width=220, height=50)
+                self._channel.settimeout(0.2)
+            self.connected.emit()
+            while self._is_running:
+                try:
+                    with self._channel_lock:
+                        if self._channel is None or self._channel.closed:
+                            break
+                        data = self._channel.recv(4096)
+                    if data:
+                        self.output_ready.emit(data.decode('utf-8', errors='replace'))
+                    elif not data:
+                        break
+                except socket.timeout:
+                    pass
+                except Exception as exc:
+                    logger.debug(f"SshConsoleWorker recv: {exc}")
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+        finally:
+            self._cleanup()
+            self.disconnected.emit()
+
+    def send_command(self, cmd):
+        with self._channel_lock:
+            if self._channel and not self._channel.closed:
+                self._channel.send(cmd)
+
+    def stop(self):
+        self._is_running = False
+
+    def _cleanup(self):
+        try:
+            with self._channel_lock:
+                if self._channel:
+                    self._channel.close()
+                    self._channel = None
+            if self._ssh:
+                self._ssh.close()
+                self._ssh = None
+        except Exception as exc:
+            logger.debug(f"SshConsoleWorker cleanup: {exc}")
 
 
 class TestStationInterface(QMainWindow):
@@ -4272,6 +4346,9 @@ class TestStationInterface(QMainWindow):
             if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
 
+            if hasattr(self, '_ssh_console_worker') and self._ssh_console_worker:
+                self._ssh_console_worker.stop()
+
             if hasattr(self, 'ssh_handler') and self.ssh_handler.is_connect:
                 self.ssh_handler.SSH_disconnect()
 
@@ -4671,6 +4748,149 @@ class TestStationInterface(QMainWindow):
         return tab
 
 
+    def create_ssh_console_tab(self):
+        """Create an interactive SSH console tab connected to the Raspberry Pi."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Terminal output area (created first so buttons can reference it directly)
+        self._ssh_console_output = QTextEdit()
+        self._ssh_console_output.setReadOnly(True)
+        self._ssh_console_output.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: 'Courier New', monospace;
+                font-size: 11pt;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+
+        # Connection status bar
+        status_bar = QHBoxLayout()
+        rpi_host = self.ssh_handler.host
+        self._ssh_console_status = QLabel(f"Disconnected  |  Host: {rpi_host}")
+        self._ssh_console_status.setStyleSheet(
+            "background-color: #6c757d; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
+        )
+        status_bar.addWidget(self._ssh_console_status)
+        status_bar.addStretch()
+
+        self._ssh_connect_btn = QPushButton("Connect")
+        self._ssh_connect_btn.setStyleSheet("background-color: #28a745; color: white; padding: 4px 12px;")
+        self._ssh_connect_btn.clicked.connect(self._ssh_console_connect)
+        status_bar.addWidget(self._ssh_connect_btn)
+
+        self._ssh_disconnect_btn = QPushButton("Disconnect")
+        self._ssh_disconnect_btn.setStyleSheet("background-color: #dc3545; color: white; padding: 4px 12px;")
+        self._ssh_disconnect_btn.setEnabled(False)
+        self._ssh_disconnect_btn.clicked.connect(self._ssh_console_disconnect)
+        status_bar.addWidget(self._ssh_disconnect_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setStyleSheet("background-color: #6c757d; color: white; padding: 4px 12px;")
+        clear_btn.clicked.connect(self._ssh_console_output.clear)
+        status_bar.addWidget(clear_btn)
+
+        layout.addLayout(status_bar)
+        layout.addWidget(self._ssh_console_output, stretch=1)
+
+        # Command input row
+        cmd_row = QHBoxLayout()
+        cmd_row.setSpacing(6)
+
+        prompt_label = QLabel("$")
+        prompt_label.setStyleSheet("font-family: monospace; font-weight: bold; font-size: 11pt;")
+        cmd_row.addWidget(prompt_label)
+
+        self._ssh_cmd_input = QLineEdit()
+        self._ssh_cmd_input.setPlaceholderText("Enter command and press Enter or click Send…")
+        self._ssh_cmd_input.setEnabled(False)
+        self._ssh_cmd_input.returnPressed.connect(self._ssh_console_send)
+        self._ssh_cmd_input.setStyleSheet("font-family: monospace; font-size: 11pt; padding: 4px;")
+        cmd_row.addWidget(self._ssh_cmd_input, stretch=1)
+
+        send_btn = QPushButton("Send")
+        send_btn.setStyleSheet("background-color: #007bff; color: white; padding: 4px 14px;")
+        send_btn.clicked.connect(self._ssh_console_send)
+        cmd_row.addWidget(send_btn)
+
+        layout.addLayout(cmd_row)
+
+        self._ssh_console_worker = None
+        return tab
+
+    def _ssh_console_connect(self):
+        """Start the SSH console worker and connect to the Raspberry Pi."""
+        if self._ssh_console_worker and self._ssh_console_worker.isRunning():
+            return
+        h = self.ssh_handler
+        self._ssh_console_worker = SshConsoleWorker(
+            h.host, h.port, h.username, h.password
+        )
+        self._ssh_console_worker.output_ready.connect(self._ssh_console_append)
+        self._ssh_console_worker.connected.connect(self._ssh_console_on_connected)
+        self._ssh_console_worker.disconnected.connect(self._ssh_console_on_disconnected)
+        self._ssh_console_worker.error_occurred.connect(self._ssh_console_on_error)
+        self._ssh_console_worker.start()
+        self._ssh_connect_btn.setEnabled(False)
+        self._ssh_console_status.setText(f"Connecting…  |  Host: {h.host}")
+        self._ssh_console_status.setStyleSheet(
+            "background-color: #ffc107; color: black; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
+        )
+
+    def _ssh_console_disconnect(self):
+        """Stop the SSH console worker."""
+        if self._ssh_console_worker:
+            self._ssh_console_worker.stop()
+
+    def _ssh_console_send(self):
+        """Send the typed command to the remote shell."""
+        if self._ssh_console_worker and self._ssh_console_worker.isRunning():
+            cmd = self._ssh_cmd_input.text()
+            self._ssh_console_worker.send_command(cmd + "\n")
+            self._ssh_cmd_input.clear()
+
+    def _ssh_console_append(self, text):
+        """Append raw terminal text to the output widget."""
+        clean = SshConsoleWorker._ANSI_ESCAPE.sub('', text)
+        cursor = self._ssh_console_output.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self._ssh_console_output.setTextCursor(cursor)
+        self._ssh_console_output.insertPlainText(clean)
+        self._ssh_console_output.verticalScrollBar().setValue(
+            self._ssh_console_output.verticalScrollBar().maximum()
+        )
+
+    def _ssh_console_on_connected(self):
+        h = self.ssh_handler
+        self._ssh_console_status.setText(f"Connected  |  Host: {h.host}")
+        self._ssh_console_status.setStyleSheet(
+            "background-color: #28a745; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
+        )
+        self._ssh_connect_btn.setEnabled(False)
+        self._ssh_disconnect_btn.setEnabled(True)
+        self._ssh_cmd_input.setEnabled(True)
+        self._ssh_cmd_input.setFocus()
+
+    def _ssh_console_on_disconnected(self):
+        h = self.ssh_handler
+        self._ssh_console_status.setText(f"Disconnected  |  Host: {h.host}")
+        self._ssh_console_status.setStyleSheet(
+            "background-color: #6c757d; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
+        )
+        self._ssh_connect_btn.setEnabled(True)
+        self._ssh_disconnect_btn.setEnabled(False)
+        self._ssh_cmd_input.setEnabled(False)
+
+    def _ssh_console_on_error(self, msg):
+        self._ssh_console_output.append(f'\n[ERROR] {msg}\n')
+        self._ssh_console_on_disconnected()
+
     def init_ui(self):
         """Initialize the user interface with responsive layouts"""
         # Create a main scroll area
@@ -4694,6 +4914,7 @@ class TestStationInterface(QMainWindow):
         self.tab_widget.addTab(self.create_test_tab("System Self Test"), "Self Test")
         self.tab_widget.addTab(self.create_test_tab("DIMM Calibration"), "DIMM Cal")
         self.tab_widget.addTab(self.create_test_tab("VNA Calibration"), "VNA Cal")
+        self.tab_widget.addTab(self.create_ssh_console_tab(), "RPI Console")
 
         # Set the central widget
         main_scroll.setWidget(central_widget)
