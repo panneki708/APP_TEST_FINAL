@@ -2719,7 +2719,8 @@ class TestStationInterface(QMainWindow):
             is_error (bool): When True the text is rendered in red; otherwise green.
         """
         if hasattr(self, 'BNCtest_console') and self.BNCtest_console is not None:
-            colour = "red" if is_error else "green"
+            # Vibrant colours chosen for the dark terminal background
+            colour = "#f85149" if is_error else "#3fb950"
             self.BNCtest_console.append(
                 f'<span style="color:{colour}; font-weight:bold;">{message}</span>'
             )
@@ -2744,17 +2745,38 @@ class TestStationInterface(QMainWindow):
             if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
 
+            # Reset zone indicator labels to "pending" state
+            if hasattr(self, 'BNC_zone_labels'):
+                for znum, lbl in self.BNC_zone_labels.items():
+                    subtitle = self._BNC_ZONE_SUBTITLES.get(znum, "")
+                    lbl.setText(f"⏳  Zone {znum}\n{subtitle}")
+                    lbl.setStyleSheet("""
+                        QLabel {
+                            background-color: #fff3cd;
+                            color: #856404;
+                            border: 2px solid #ffc107;
+                            border-radius: 6px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                            padding: 4px 6px;
+                        }
+                    """)
+
+            # Reset progress bar
+            if hasattr(self, 'bnc_progress_bar'):
+                self.bnc_progress_bar.setValue(0)
+
             # Reset UI to "running" state
             self.BNCtest_console.clear()
-            self.BNC_status_label_start.setText("Test: Running...")
+            self.BNC_status_label_start.setText("● Running…")
             self.BNC_status_label_start.setStyleSheet("""
                 QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
+                    background-color: #fd7e14;
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 14px;
                     font-weight: bold;
-                    font-size: 9pt;
+                    font-size: 10pt;
                 }
             """)
             self.BNC_start_button.setEnabled(False)
@@ -2800,13 +2822,77 @@ class TestStationInterface(QMainWindow):
             self.worker.start()
         else:
             self.append_BNC_message("Test cancelled by user", is_error=True)
-            self.BNC_status_label_start.setText("Cancelled")
             self.BNC_start_button.setEnabled(True)
-            self.BNC_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+            self.BNC_status_label_start.setText("● Cancelled")
+            self.BNC_status_label_start.setStyleSheet("""
+                QLabel {
+                    background-color: #dc3545;
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 14px;
+                    font-weight: bold;
+                    font-size: 10pt;
+                }
+            """)
 
     # ------------------------------------------------------------------ #
     # BNC zone result helpers                                              #
     # ------------------------------------------------------------------ #
+
+    # Maps the zone number to its human-readable subtitle used in the UI pill
+    _BNC_ZONE_SUBTITLES = {
+        2: "Mid-Inner",
+        3: "Mid-Edge",
+        4: "Edge",
+        5: "Outer",
+    }
+
+    def _update_bnc_zone_label(self, zone_num, passed):
+        """Update the visual indicator for a completed BNC zone.
+
+        Args:
+            zone_num (int): Zone number (2–5).
+            passed (bool): Whether the zone measurement passed.
+        """
+        if not hasattr(self, 'BNC_zone_labels'):
+            return
+        lbl = self.BNC_zone_labels.get(zone_num)
+        if lbl is None:
+            return
+        subtitle = self._BNC_ZONE_SUBTITLES.get(zone_num, "")
+        if passed:
+            icon = "✅"
+            style = """
+                QLabel {
+                    background-color: #d4edda;
+                    color: #155724;
+                    border: 2px solid #28a745;
+                    border-radius: 6px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                    padding: 4px 6px;
+                }
+            """
+        else:
+            icon = "❌"
+            style = """
+                QLabel {
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    border: 2px solid #dc3545;
+                    border-radius: 6px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                    padding: 4px 6px;
+                }
+            """
+        lbl.setText(f"{icon}  Zone {zone_num}\n{subtitle}")
+        lbl.setStyleSheet(style)
+
+        # Advance the progress bar
+        if hasattr(self, 'bnc_progress_bar'):
+            current = self.bnc_progress_bar.value()
+            self.bnc_progress_bar.setValue(current + 1)
 
     def _handle_bnc_zone_result(self, zone_label, testpoint_label, line, next_zone_number=None):
         """Parse a CSV result line for a BNC zone and log the outcome.
@@ -2837,11 +2923,21 @@ class TestStationInterface(QMainWindow):
         value = parts[1]
         passed = parts[2].strip().upper() == "PASS"
 
+        # Extract zone number from testpoint_label (e.g. "Zone2" → 2)
+        try:
+            zone_num = int(testpoint_label.replace("Zone", ""))
+        except ValueError:
+            zone_num = None
+
         if passed:
             self.append_BNC_message(f"\nBNC Test {zone_label} PASS\n")
         else:
             self.append_BNC_message(f"\nBNC Test {zone_label} FAIL\n", is_error=True)
             self.over_all_result = 'FAIL'
+
+        # Update the visual zone indicator
+        if zone_num is not None:
+            self._update_bnc_zone_label(zone_num, passed)
 
         self.excel_logger.log_BNC_measurement(
             test_zone=test_name,
@@ -2878,8 +2974,34 @@ class TestStationInterface(QMainWindow):
             )
             self.excel_logger.update_overall_result(self.over_all_result)
             self.append_BNC_message("\nBNC Test completed successfully\n")
-            self.BNC_status_label_start.setText("Completed")
-            self.BNC_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
+
+            # Update status pill to Completed / Failed depending on overall
+            if self.over_all_result == 'PASS':
+                status_text = "● Completed — PASS"
+                status_style = """
+                    QLabel {
+                        background-color: #28a745;
+                        color: white;
+                        padding: 6px 14px;
+                        border-radius: 14px;
+                        font-weight: bold;
+                        font-size: 10pt;
+                    }
+                """
+            else:
+                status_text = "● Completed — FAIL"
+                status_style = """
+                    QLabel {
+                        background-color: #dc3545;
+                        color: white;
+                        padding: 6px 14px;
+                        border-radius: 14px;
+                        font-weight: bold;
+                        font-size: 10pt;
+                    }
+                """
+            self.BNC_status_label_start.setText(status_text)
+            self.BNC_status_label_start.setStyleSheet(status_style)
             self.BNC_start_button.setEnabled(True)
 
     def handle_BNC_output(self, line):
@@ -2952,8 +3074,17 @@ class TestStationInterface(QMainWindow):
         self.append_BNC_message(f"ERROR: {error_msg}", is_error=True)
         self.BNC_start_button.setEnabled(True)
         self.cleanup_resources()
-        self.BNC_status_label_start.setText("Failed")
-        self.BNC_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+        self.BNC_status_label_start.setText("● Failed")
+        self.BNC_status_label_start.setStyleSheet("""
+            QLabel {
+                background-color: #dc3545;
+                color: white;
+                padding: 6px 14px;
+                border-radius: 14px;
+                font-weight: bold;
+                font-size: 10pt;
+            }
+        """)
 
 
     @log_function
@@ -4439,48 +4570,193 @@ class TestStationInterface(QMainWindow):
             test_layout.addWidget(self.VNAtest_console)
 
         elif title == "Verify BNC Port":
-            # ---- Status label (shows Ready / Running / Completed / Failed) ----
-            status_layout = QHBoxLayout()
-            self.BNC_status_label_start = QLabel('Test: Ready')
+            # ================================================================
+            # BNC Port Verification – UI layout
+            # ================================================================
+
+            # ── Header banner ──────────────────────────────────────────────
+            header = QFrame()
+            header.setFixedHeight(68)
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #1565C0, stop:1 #0288D1
+                    );
+                    border-radius: 6px;
+                }
+            """)
+            header_layout = QVBoxLayout(header)
+            header_layout.setContentsMargins(16, 6, 16, 6)
+            header_layout.setSpacing(2)
+
+            header_title = QLabel("BNC Port Verification")
+            header_title.setStyleSheet(
+                "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
+            )
+            header_sub = QLabel(
+                "Measures return loss (dB) across 4 RF zones using the vector network analyser."
+            )
+            header_sub.setStyleSheet(
+                "color: rgba(255,255,255,180); font-size: 8pt; background: transparent;"
+            )
+            header_layout.addWidget(header_title)
+            header_layout.addWidget(header_sub)
+            test_layout.addWidget(header)
+
+            # ── Controls row (status pill + Start button) ──────────────────
+            controls_row = QHBoxLayout()
+            controls_row.setSpacing(12)
+
+            self.BNC_status_label_start = QLabel("● Test: Ready")
             self.BNC_status_label_start.setAlignment(Qt.AlignCenter)
+            self.BNC_status_label_start.setMinimumWidth(160)
             self.BNC_status_label_start.setStyleSheet("""
                 QLabel {
                     background-color: #17a2b8;
                     color: white;
-                    padding: 2px 5px;
-                    border-radius: 3px;
+                    padding: 6px 14px;
+                    border-radius: 14px;
                     font-weight: bold;
-                    font-size: 9pt;
+                    font-size: 10pt;
                 }
             """)
-            status_layout.addWidget(self.BNC_status_label_start)
-            test_layout.addLayout(status_layout)
 
-            # ---- Control buttons ----
-            controls_layout = QHBoxLayout()
-            self.BNC_start_button = QPushButton('Start')
-            self.BNC_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            self.BNC_start_button = QPushButton("▶  Start Test")
+            self.BNC_start_button.setMinimumHeight(38)
+            self.BNC_start_button.setMinimumWidth(150)
+            self.BNC_start_button.setCursor(Qt.PointingHandCursor)
+            self.BNC_start_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    padding: 6px 18px;
+                }
+                QPushButton:hover    { background-color: #218838; }
+                QPushButton:pressed  { background-color: #1e7e34; }
+                QPushButton:disabled { background-color: #94d3a2; color: #e9f7ed; }
+            """)
             self.BNC_start_button.clicked.connect(self.BNC_test)
-            controls_layout.addWidget(self.BNC_start_button)
-            test_layout.addLayout(controls_layout)
 
-            # ---- Optional progress bar ----
-            if show_progress:
-                progress = QProgressBar()
-                progress.setValue(0)
-                progress.setMinimumHeight(20)
-                test_layout.addWidget(progress)
+            controls_row.addWidget(self.BNC_status_label_start)
+            controls_row.addStretch()
+            controls_row.addWidget(self.BNC_start_button)
+            test_layout.addLayout(controls_row)
 
-            # ---- Output console ----
+            # ── Zone status panel ──────────────────────────────────────────
+            zones_group = QGroupBox("Zone Status")
+            zones_group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold;
+                    font-size: 9pt;
+                    color: #333;
+                    border: 1px solid #ced4da;
+                    border-radius: 6px;
+                    margin-top: 8px;
+                    padding-top: 10px;
+                    background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    subcontrol-position: top left;
+                    left: 12px;
+                    padding: 0 6px;
+                }
+            """)
+            zones_outer = QVBoxLayout(zones_group)
+            zones_outer.setSpacing(8)
+            zones_outer.setContentsMargins(10, 12, 10, 10)
+
+            # Four zone indicator boxes — subtitles from the class-level mapping
+            zone_row = QHBoxLayout()
+            zone_row.setSpacing(10)
+            ZONE_DEFS = [
+                (znum, f"Zone {znum}", subtitle)
+                for znum, subtitle in self._BNC_ZONE_SUBTITLES.items()
+            ]
+            self.BNC_zone_labels = {}
+            for znum, zname, zdesc in ZONE_DEFS:
+                lbl = QLabel(f"⬜  {zname}\n{zdesc}")
+                lbl.setAlignment(Qt.AlignCenter)
+                lbl.setMinimumHeight(56)
+                lbl.setStyleSheet("""
+                    QLabel {
+                        background-color: #e9ecef;
+                        color: #6c757d;
+                        border: 2px solid #ced4da;
+                        border-radius: 6px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                        padding: 4px 6px;
+                    }
+                """)
+                self.BNC_zone_labels[znum] = lbl
+                zone_row.addWidget(lbl)
+            zones_outer.addLayout(zone_row)
+
+            # Progress bar inside the zone panel
+            self.bnc_progress_bar = QProgressBar()
+            self.bnc_progress_bar.setRange(0, 4)
+            self.bnc_progress_bar.setValue(0)
+            self.bnc_progress_bar.setFormat("%v / 4 zones complete")
+            self.bnc_progress_bar.setMinimumHeight(22)
+            self.bnc_progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #adb5bd;
+                    border-radius: 5px;
+                    background-color: #e9ecef;
+                    text-align: center;
+                    font-size: 8pt;
+                    color: #343a40;
+                }
+                QProgressBar::chunk {
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #28a745, stop:1 #20c997
+                    );
+                    border-radius: 5px;
+                }
+            """)
+            zones_outer.addWidget(self.bnc_progress_bar)
+            test_layout.addWidget(zones_group)
+
+            # ── Console header label ───────────────────────────────────────
+            console_header = QLabel("  Test Output")
+            console_header.setStyleSheet("""
+                QLabel {
+                    background-color: #343a40;
+                    color: #adb5bd;
+                    font-size: 8pt;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                    border-top-left-radius: 4px;
+                    border-top-right-radius: 4px;
+                }
+            """)
+            test_layout.addWidget(console_header)
+
+            # ── Dark terminal console ──────────────────────────────────────
+            # Minimum height is 400 px (reduced from 500) to give room to the
+            # new zone status panel above while still showing ample output.
             self.BNCtest_console = QTextBrowser()
-            self.BNCtest_console.setMinimumHeight(500)
+            self.BNCtest_console.setMinimumHeight(400)
             self.BNCtest_console.setMaximumHeight(1500)
             self.BNCtest_console.setStyleSheet("""
                 QTextBrowser {
-                    background-color: #f5f5f5;
-                    border: 1px solid #ddd;
-                    font-family: monospace;
+                    background-color: #0d1117;
+                    color: #c9d1d9;
+                    border: 1px solid #30363d;
+                    border-top: none;
+                    border-bottom-left-radius: 4px;
+                    border-bottom-right-radius: 4px;
+                    font-family: 'Courier New', Consolas, monospace;
                     font-size: 10pt;
+                    padding: 6px;
+                    selection-background-color: #264f78;
                 }
             """)
             test_layout.addWidget(self.BNCtest_console)
