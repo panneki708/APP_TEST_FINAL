@@ -964,7 +964,6 @@ class ExcelLogger:
             )
             self.BNC_sheet.cell(row=row_num, column=2, value=test_zone)
             self.BNC_sheet.cell(row=row_num, column=3, value=test_details)
-            print(test_passed)
             # Test Result with color coding
             result_cell = self.BNC_sheet.cell(
                 row=row_num, column=4,
@@ -2713,47 +2712,58 @@ class TestStationInterface(QMainWindow):
             )
 
     def append_BNC_message(self, message, is_error=False):
-        """Helper method to append colored messages to DIMM console"""
-        if hasattr(self, 'BNCtest_console') and self.BNCtest_console is not None:
-            if is_error:
-                self.BNCtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
-            else:
-                self.BNCtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+        """Append a colour-coded HTML message to the BNC test console.
 
-            # Auto-scroll to bottom
+        Args:
+            message (str): The text to display.
+            is_error (bool): When True the text is rendered in red; otherwise green.
+        """
+        if hasattr(self, 'BNCtest_console') and self.BNCtest_console is not None:
+            colour = "red" if is_error else "green"
+            self.BNCtest_console.append(
+                f'<span style="color:{colour}; font-weight:bold;">{message}</span>'
+            )
+            # Auto-scroll to the latest output
             self.BNCtest_console.verticalScrollBar().setValue(
                 self.BNCtest_console.verticalScrollBar().maximum()
             )
 
     def BNC_test(self):
+        """Start the BNC Port Verification test sequence.
+
+        Resets state from any previous run, clears the console, and presents
+        the first zone-connection prompt (Zone 2) to the operator.
+        """
         try:
             if self.bnc_t >= 1:
-                excel_logger.reset_sheet("BNC Port Verification")
+                self.excel_logger.reset_sheet("BNC Port Verification")
             self.bnc_t += 1
-            self.overall_result = 'PASS'
-            # self.start_time1 = time.time()
+            self.over_all_result = 'PASS'
 
+            # Stop any previously running worker
             if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
 
-            # Reset UI state
+            # Reset UI to "running" state
             self.BNCtest_console.clear()
             self.BNC_status_label_start.setText("Test: Running...")
             self.BNC_status_label_start.setStyleSheet("""
-            QLabel {
+                QLabel {
                     background-color: #ffc107;
                     color: black;
                     padding: 2px 5px;
                     border-radius: 3px;
                     font-weight: bold;
                     font-size: 9pt;
-            }"""
-                                                      )
+                }
+            """)
             self.BNC_start_button.setEnabled(False)
 
-            self.append_BNC_message("\n================== BNC Test Started =======================\n")
+            self.append_BNC_message(
+                "\n================== BNC Test Started =======================\n"
+            )
 
-            # Show first prompt for Zone 1
+            # Kick off with the first zone prompt
             self.show_zone_prompt(2)
 
         except Exception as e:
@@ -2761,7 +2771,11 @@ class TestStationInterface(QMainWindow):
             self.cleanup_resources()
 
     def show_zone_prompt(self, zone_number):
+        """Prompt the operator to connect a zone, then launch the remote test worker.
 
+        Args:
+            zone_number (int): The zone number to display in the prompt dialog.
+        """
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
         msg.setText(f"Please connect Zone {zone_number} and click OK to continue")
@@ -2775,13 +2789,12 @@ class TestStationInterface(QMainWindow):
             self.start_time1 = time.time()
             self.append_BNC_message(f"\nTesting Zone {zone_number}...\n")
 
-            # Start the worker with the main script
+            # Start a new worker for the remote BNC test script
             self.worker = Worker(
                 self.ssh_handler,
-                '/home/robot/Manufacturing_test/aipc_beta/BNC.py',  # Your original script
+                '/home/robot/Manufacturing_test/aipc_beta/BNC.py',
                 command
             )
-            # Connect the output handler
             self.worker.output_ready.connect(self.handle_BNC_output)
             self.worker.error_occurred.connect(self.handle_BNC_error)
             self.worker.start()
@@ -2791,264 +2804,151 @@ class TestStationInterface(QMainWindow):
             self.BNC_start_button.setEnabled(True)
             self.BNC_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
 
+    # ------------------------------------------------------------------ #
+    # BNC zone result helpers                                              #
+    # ------------------------------------------------------------------ #
+
+    def _handle_bnc_zone_result(self, zone_label, testpoint_label, line, next_zone_number=None):
+        """Parse a CSV result line for a BNC zone and log the outcome.
+
+        Expected line format: ``<zone_name>,<value_dB>,<PASS|FAIL>``
+
+        After logging, the worker for the current zone is stopped.  If
+        *next_zone_number* is given the operator is prompted to connect that
+        zone; otherwise the full test sequence is marked as complete.
+
+        Args:
+            zone_label (str): Zone identifier expected in the output line
+                (e.g. ``"Zone2-Mid_Inner"``).
+            testpoint_label (str): Short label used in the summary log
+                (e.g. ``"Zone2"``).
+            line (str): Raw output line received from the remote script.
+            next_zone_number (int or None): Zone number to prompt next, or
+                ``None`` when this is the final zone.
+        """
+        parts = line.split(",")
+        if len(parts) < 3:
+            self.append_BNC_message(
+                f"Invalid data format for {zone_label}: {line}", is_error=True
+            )
+            return
+
+        test_name = parts[0]
+        value = parts[1]
+        passed = parts[2].strip().upper() == "PASS"
+
+        if passed:
+            self.append_BNC_message(f"\nBNC Test {zone_label} PASS\n")
+        else:
+            self.append_BNC_message(f"\nBNC Test {zone_label} FAIL\n", is_error=True)
+            self.over_all_result = 'FAIL'
+
+        self.excel_logger.log_BNC_measurement(
+            test_zone=test_name,
+            test_details=value,
+            test_passed=passed,
+        )
+
+        self.step_no += 1
+        self.excel_logger.log_summary(
+            step_data={
+                'step': str(self.step_no),
+                'unit': 'dB',
+                'low_limit': '-1',
+                'measure': value,
+                'high_limit': '0',
+                'teststep': 'Verify BNC port',
+                'testpoints': testpoint_label,
+                'status': "PASS" if passed else "FAIL",
+            }
+        )
+
+        self.worker.stop()
+
+        if next_zone_number is not None:
+            # Advance to the next zone
+            self.show_zone_prompt(next_zone_number)
+        else:
+            # All zones complete – finalise the test run
+            self.excel_logger.log_summary(
+                metadata={
+                    'end_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'overall_result': self.over_all_result,
+                }
+            )
+            self.excel_logger.update_overall_result(self.over_all_result)
+            self.append_BNC_message("\nBNC Test completed successfully\n")
+            self.BNC_status_label_start.setText("Completed")
+            self.BNC_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
+            self.BNC_start_button.setEnabled(True)
+
     def handle_BNC_output(self, line):
-        # Your original output handling - completely unchanged
+        """Handle a single line of output from the remote BNC test script.
+
+        Infrastructure errors (EtherCAT slave init failure, PyVISA errors) are
+        shown as blocking modal dialogs and abort the worker immediately.
+
+        Recognised zone-result lines are dispatched to
+        :meth:`_handle_bnc_zone_result`, which parses the CSV payload, logs
+        the result, and advances to the next zone prompt.
+
+        A 90-second watchdog is also checked on every line; if no useful data
+        has arrived within that window the worker is stopped with a warning.
+
+        Args:
+            line (str): A single line of text received from the remote process.
+        """
+        # --- Infrastructure error checks ------------------------------------
         if "Error in slave initialization" in line:
             QMessageBox.critical(
                 self,
                 "Critical Error",
-                "Slave initialization failed! Please check the EtherCAT connection and restart the test."
+                "Slave initialization failed!\n"
+                "Please check the EtherCAT connection and restart the test.",
             )
             self.worker.stop()
+            return
 
         if "pyvisa.errors" in line:
             QMessageBox.critical(
                 self,
                 "PyVISA Error",
-                f"A PyVISA error occurred: {line.strip()}"
+                f"A PyVISA error occurred:\n{line.strip()}",
             )
             self.worker.stop()
             return
-        """
-        if "Zone1-Inner" in line:
-            Val = line.split(",")
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
 
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone1-Inner PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone1-Inner Fail\n", is_error=True)
-                val = False
-
-                self.overall_result = 'FAIL'
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no = self.step_no + 1
-            # Log metadata along with test data
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone1',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            # After Zone1 is done, prompt for Zone2
-
-            self.worker.stop()
-            time.sleep(2)
-            self.show_zone_prompt(2)
-            # self.handle_test_failure()
-        """
-
+        # --- Zone result dispatch -------------------------------------------
         if "Zone2-Mid_Inner" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone2-Mid_Inner: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-            print(Val)
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message("BNC Test Zone2-Mid_Inner PASS")
-                val = True
-
-            else:
-                self.append_BNC_message(f"BNC Test Zone2-Mid_Inner Fail", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no = self.step_no + 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone2',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            # After Zone2 is done, prompt for Zone3
-            self.worker.stop()
-            self.show_zone_prompt(3)
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone2-Mid_Inner", "Zone2", line, next_zone_number=3)
 
         elif "Zone3-Mid_Edge" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone3-Mid_Edge: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone3-Mid_Edge PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone3-Mid_Edge Fail\n", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no= self.step_no+ 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone3',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.worker.stop()
-            self.show_zone_prompt(4)
-
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone3-Mid_Edge", "Zone3", line, next_zone_number=4)
 
         elif "Zone4-Edge" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone4-Edge: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone4-Edge PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone4-Edge Fail\n", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no = self.step_no + 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone4',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.worker.stop()
-            self.show_zone_prompt(5)
-
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone4-Edge", "Zone4", line, next_zone_number=5)
 
         elif "Zone5-Outer" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone5-Outer: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
+            self._handle_bnc_zone_result("Zone5-Outer", "Zone5", line, next_zone_number=None)
 
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone5-Outer PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone5-Outer Fail\n", is_error=True)
-                val = False
-
-                self.overall_result = 'FAIL'
-                self.over_all_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-
-            self.step_no = self.step_no + 1
-
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone5',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.excel_logger.log_summary(
-                metadata={
-                    'end_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'overall_result': self.over_all_result
-                }
-            )
-
-            self.excel_logger.update_overall_result(self.over_all_result)
-
-
-
-            self.append_BNC_message(f"BNC Test completed successfully")
-            self.worker.stop()
-            self.BNC_status_label_start.setText("Completed")
-            self.BNC_start_button.setEnabled(True)
-            self.BNC_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
-
+        # --- Watchdog: abort if no data received within 90 seconds ----------
         if time.time() - self.start_time1 > 90:
             self.append_BNC_message(
-                f"===No Data from Raspberry pi for more than 90 sec please check the Raspberry pi =====", is_error=True)
+                "=== No data from Raspberry Pi for more than 90 s. "
+                "Please check the Raspberry Pi. ===",
+                is_error=True,
+            )
             self.worker.stop()
 
     def handle_BNC_error(self, error_msg):
+        """Handle an error signal emitted by the BNC test worker.
+
+        Displays the error in the console, re-enables the Start button, and
+        cleans up any active resources.
+
+        Args:
+            error_msg (str): The error message reported by the worker.
+        """
         self.append_BNC_message(f"ERROR: {error_msg}", is_error=True)
         self.BNC_start_button.setEnabled(True)
         self.cleanup_resources()
@@ -4539,53 +4439,50 @@ class TestStationInterface(QMainWindow):
             test_layout.addWidget(self.VNAtest_console)
 
         elif title == "Verify BNC Port":
-            BNC_layout = QHBoxLayout()
+            # ---- Status label (shows Ready / Running / Completed / Failed) ----
+            status_layout = QHBoxLayout()
             self.BNC_status_label_start = QLabel('Test: Ready')
             self.BNC_status_label_start.setAlignment(Qt.AlignCenter)
             self.BNC_status_label_start.setStyleSheet("""
-                                                                 QLabel {
-                                                                     background-color: #17a2b8;
-                                                                     color: white;
-                                                                     padding: 2px 5px;
-                                                                     border-radius: 3px;
-                                                                     font-weight: bold;
-                                                                     font-size: 9pt;
-                                                                 }
-                                                             """)
-            BNC_layout.addWidget(self.BNC_status_label_start)
+                QLabel {
+                    background-color: #17a2b8;
+                    color: white;
+                    padding: 2px 5px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                    font-size: 9pt;
+                }
+            """)
+            status_layout.addWidget(self.BNC_status_label_start)
+            test_layout.addLayout(status_layout)
 
-            test_layout.addLayout(BNC_layout)
+            # ---- Control buttons ----
             controls_layout = QHBoxLayout()
-
             self.BNC_start_button = QPushButton('Start')
             self.BNC_start_button.setStyleSheet("background-color: #28a745; color: white;")
             self.BNC_start_button.clicked.connect(self.BNC_test)
-            # self.self_start_button.clicked.connect()
             controls_layout.addWidget(self.BNC_start_button)
             test_layout.addLayout(controls_layout)
+
+            # ---- Optional progress bar ----
             if show_progress:
                 progress = QProgressBar()
                 progress.setValue(0)
                 progress.setMinimumHeight(20)
                 test_layout.addWidget(progress)
-            # BNC = QProgressBar()
-            # BNC.setValue(0)
-            # BNC.setMinimumHeight(20)
-            # BNC.addWidget(BNC)
 
+            # ---- Output console ----
             self.BNCtest_console = QTextBrowser()
-            self.BNCtest_console.setMinimumHeight(500)  # Reduced size
+            self.BNCtest_console.setMinimumHeight(500)
             self.BNCtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
             self.BNCtest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                    background-color: #f5f5f5;
-                                                    border: 1px solid #ddd;
-                                                    font-family: monospace;
-                                                    font-size: 10pt;
-                                                    }
-                                                    """)
+                QTextBrowser {
+                    background-color: #f5f5f5;
+                    border: 1px solid #ddd;
+                    font-family: monospace;
+                    font-size: 10pt;
+                }
+            """)
             test_layout.addWidget(self.BNCtest_console)
 
 
