@@ -1455,11 +1455,11 @@ class RemoteFileBrowserDialog(QDialog):
 
         # Sort: folders first, then files, both alphabetically
         dirs = sorted(
-            [e for e in entries if paramiko.stat.S_ISDIR(e.st_mode)],
+            [e for e in entries if stat.S_ISDIR(e.st_mode)],
             key=lambda e: e.filename.lower()
         )
         files = sorted(
-            [e for e in entries if not paramiko.stat.S_ISDIR(e.st_mode)],
+            [e for e in entries if not stat.S_ISDIR(e.st_mode)],
             key=lambda e: e.filename.lower()
         )
 
