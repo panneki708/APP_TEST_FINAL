@@ -2235,6 +2235,15 @@ class TestStationInterface(QMainWindow):
                 "Slave initialization failed! Please check the EtherCAT connection and restart the test."
             )
             self.worker.stop()
+
+        if "pyvisa.errors" in line:
+            QMessageBox.critical(
+                self,
+                "PyVISA Error",
+                f"A PyVISA error occurred: {line.strip()}"
+            )
+            self.worker.stop()
+            return
         """
         if "Zone1-Inner" in line:
             Val = line.split(",")
