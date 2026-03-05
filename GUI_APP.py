@@ -4212,7 +4212,7 @@ class TestStationInterface(QMainWindow):
     def _make_tab_header(self, title, subtitle, color1="#1565C0", color2="#0288D1"):
         """Return a styled gradient header QFrame for any tab."""
         header = QFrame()
-        header.setFixedHeight(46)
+        header.setMinimumHeight(52)
         header.setStyleSheet(f"""
             QFrame {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -4221,9 +4221,10 @@ class TestStationInterface(QMainWindow):
             }}
         """)
         hdr_l = QVBoxLayout(header)
-        hdr_l.setContentsMargins(16, 6, 16, 6)
+        hdr_l.setContentsMargins(16, 8, 16, 8)
         hdr_l.setSpacing(2)
         t = QLabel(title)
+        t.setWordWrap(True)
         t.setStyleSheet(
             "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
         )
@@ -4588,7 +4589,7 @@ class TestStationInterface(QMainWindow):
 
             # ── Header banner ──────────────────────────────────────────────
             header = QFrame()
-            header.setFixedHeight(46)
+            header.setMinimumHeight(52)
             header.setStyleSheet("""
                 QFrame {
                     background: qlineargradient(
@@ -4599,10 +4600,11 @@ class TestStationInterface(QMainWindow):
                 }
             """)
             header_layout = QVBoxLayout(header)
-            header_layout.setContentsMargins(16, 6, 16, 6)
+            header_layout.setContentsMargins(16, 8, 16, 8)
             header_layout.setSpacing(2)
 
             header_title = QLabel("BNC Port Verification")
+            header_title.setWordWrap(True)
             header_title.setStyleSheet(
                 "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
             )
