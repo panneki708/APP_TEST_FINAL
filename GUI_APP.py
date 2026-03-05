@@ -3270,8 +3270,8 @@ class TestStationInterface(QMainWindow):
         panel.setStyleSheet("""
               QGroupBox {
                   font-weight: bold; font-size: 9pt; color: white;
-                  border: none; border-radius: 6px;
-                  margin-top: 8px; padding-top: 14px;
+                  border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
+                  margin-top: 14px; padding-top: 14px;
                   background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                       stop:0 #004D40, stop:1 #00352c);
               }
@@ -3354,8 +3354,8 @@ class TestStationInterface(QMainWindow):
         panel.setStyleSheet("""
                QGroupBox {
                    font-weight: bold; font-size: 9pt; color: white;
-                   border: none; border-radius: 6px;
-                   margin-top: 8px; padding-top: 14px;
+                   border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
+                   margin-top: 14px; padding-top: 14px;
                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                        stop:0 #311B92, stop:1 #1a0f5c);
                }
@@ -4212,7 +4212,7 @@ class TestStationInterface(QMainWindow):
     def _make_tab_header(self, title, subtitle, color1="#1565C0", color2="#0288D1"):
         """Return a styled gradient header QFrame for any tab."""
         header = QFrame()
-        header.setFixedHeight(68)
+        header.setFixedHeight(46)
         header.setStyleSheet(f"""
             QFrame {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -4227,12 +4227,7 @@ class TestStationInterface(QMainWindow):
         t.setStyleSheet(
             "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
         )
-        s = QLabel(subtitle)
-        s.setStyleSheet(
-            "color: rgba(255,255,255,180); font-size: 8pt; background: transparent;"
-        )
         hdr_l.addWidget(t)
-        hdr_l.addWidget(s)
         return header
 
     def _make_status_pill(self, text="● Test: Ready"):
@@ -4593,7 +4588,7 @@ class TestStationInterface(QMainWindow):
 
             # ── Header banner ──────────────────────────────────────────────
             header = QFrame()
-            header.setFixedHeight(68)
+            header.setFixedHeight(46)
             header.setStyleSheet("""
                 QFrame {
                     background: qlineargradient(
@@ -4611,14 +4606,7 @@ class TestStationInterface(QMainWindow):
             header_title.setStyleSheet(
                 "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
             )
-            header_sub = QLabel(
-                "Measures return loss (dB) across 4 RF zones using the vector network analyser."
-            )
-            header_sub.setStyleSheet(
-                "color: rgba(255,255,255,180); font-size: 8pt; background: transparent;"
-            )
             header_layout.addWidget(header_title)
-            header_layout.addWidget(header_sub)
             test_layout.addWidget(header)
 
             # ── Controls row (status pill + Start button) ──────────────────
