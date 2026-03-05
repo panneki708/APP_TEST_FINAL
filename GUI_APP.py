@@ -3265,19 +3265,18 @@ class TestStationInterface(QMainWindow):
     def _create_Impedance_zone_panel(self, zone_name):
         """Create a responsive impedance zone panel"""
         panel = QGroupBox(zone_name)
-        panel.setFont(QFont('Arial', 10, QFont.Bold))
 
         panel.setStyleSheet("""
               QGroupBox {
                   font-weight: bold; font-size: 9pt; color: white;
                   border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
-                  margin-top: 14px; padding-top: 14px;
+                  margin-top: 20px; padding-top: 20px;
                   background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                       stop:0 #004D40, stop:1 #00352c);
               }
               QGroupBox::title {
                   subcontrol-origin: margin; subcontrol-position: top center;
-                  padding: 0 8px; color: white;
+                  padding: 2px 8px; color: white;
               }
           """)
 
@@ -3349,19 +3348,18 @@ class TestStationInterface(QMainWindow):
     def _create_resistance_zone_panel(self, zone_name):
         """Create a responsive resistance zone panel"""
         panel = QGroupBox(zone_name)
-        panel.setFont(QFont('Arial', 10, QFont.Bold))
 
         panel.setStyleSheet("""
                QGroupBox {
                    font-weight: bold; font-size: 9pt; color: white;
                    border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
-                   margin-top: 14px; padding-top: 14px;
+                   margin-top: 20px; padding-top: 20px;
                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                        stop:0 #311B92, stop:1 #1a0f5c);
                }
                QGroupBox::title {
                    subcontrol-origin: margin; subcontrol-position: top center;
-                   padding: 0 8px; color: white;
+                   padding: 2px 8px; color: white;
                }
            """)
 
