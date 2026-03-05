@@ -3276,7 +3276,7 @@ class TestStationInterface(QMainWindow):
               }
               QGroupBox::title {
                   subcontrol-origin: margin; subcontrol-position: top center;
-                  padding: 2px 8px; color: white;
+                  padding: 2px 8px; color: white; background-color: #004D40;
               }
           """)
 
@@ -3359,7 +3359,7 @@ class TestStationInterface(QMainWindow):
                }
                QGroupBox::title {
                    subcontrol-origin: margin; subcontrol-position: top center;
-                   padding: 2px 8px; color: white;
+                   padding: 2px 8px; color: white; background-color: #311B92;
                }
            """)
 
