@@ -2036,9 +2036,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to console"""
         if hasattr(self, 'console_output') and self.console_output is not None:
             if is_error:
-                self.console_output.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.console_output.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.console_output.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+                self.console_output.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
             # Auto-scroll to bottom
             self.console_output.verticalScrollBar().setValue(
                 self.console_output.verticalScrollBar().maximum()
@@ -2059,17 +2059,8 @@ class TestStationInterface(QMainWindow):
             self.vna_t = time.time()
             # Reset UI state
             self.VNAtest_console.clear()
-            self.VNA_status_label_start.setText("Test: Running...")
-            self.VNA_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.VNA_status_label_start.setText("● Running…")
+            self.VNA_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.start_vna_progress()
             self.VNA_start_button.setEnabled(False)
 
@@ -2101,17 +2092,8 @@ class TestStationInterface(QMainWindow):
                 self.VNA_start_button.setEnabled(True)
 
             if "Calibration PASS" in line:
-                self.VNA_status_label_start.setText("Test: Passed")
-                self.VNA_status_label_start.setStyleSheet("""
-                          QLabel {
-                              background-color: #28a745;
-                              color: white;
-                              padding: 2px 5px;
-                              border-radius: 3px;
-                              font-weight: bold;
-                              font-size: 9pt;
-                          }
-                      """)
+                self.VNA_status_label_start.setText('● Completed — PASS')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_PASS_SS)
                 self.append_vna_message("\n=== VNA Calibration PASSED ===")
                 self.vna_timer.stop()
                 self.worker.stop()
@@ -2119,17 +2101,8 @@ class TestStationInterface(QMainWindow):
                 # self.work_timeout = 30
 
             elif "Calibration FAIL" in line :
-                self.VNA_status_label_start.setText("Test: Failed")
-                self.VNA_status_label_start.setStyleSheet("""
-                          QLabel {
-                              background-color: #dc3545;
-                              color: white;
-                              padding: 2px 5px;
-                              border-radius: 3px;
-                              font-weight: bold;
-                              font-size: 9pt;
-                          }
-                      """)
+                self.VNA_status_label_start.setText('● Completed — FAIL')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_vna_message("\n!!! VNA Calibration FAILED !!!", is_error=True)
 
                 self.vna_timer.stop()
@@ -2137,17 +2110,8 @@ class TestStationInterface(QMainWindow):
                 self.VNA_start_button.setEnabled(True)
                 # self.work_timeout = 30
             elif "ERROR: Connect ECal module" in line :
-                self.VNA_status_label_start.setText("Test: Failed")
-                self.VNA_status_label_start.setStyleSheet("""
-                                          QLabel {
-                                              background-color: #dc3545;
-                                              color: white;
-                                              padding: 2px 5px;
-                                              border-radius: 3px;
-                                              font-weight: bold;
-                                              font-size: 9pt;
-                                          }
-                                      """)
+                self.VNA_status_label_start.setText('● Completed — FAIL')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_vna_message("\n!!! VNA Calibration FAILED : Please connect Ecal Module... !!!", is_error=True)
                 self.vna_timer.stop()
                 self.worker.stop()
@@ -2166,17 +2130,8 @@ class TestStationInterface(QMainWindow):
 
         # If test didn't explicitly pass or fail, mark it as incomplete
         if "Passed" not in self.VNA_status_label_start.text() and "Failed" not in self.VNA_status_label_start.text():
-            self.VNA_status_label_start.setText("Test: Incomplete")
-            self.VNA_status_label_start.setStyleSheet("""
-                  QLabel {
-                      background-color: #6c757d;
-                      color: white;
-                      padding: 2px 5px;
-                      border-radius: 3px;
-                      font-weight: bold;
-                      font-size: 9pt;
-                  }
-              """)
+            self.VNA_status_label_start.setText('● Incomplete')
+            self.VNA_status_label_start.setStyleSheet(self._PILL_GRAY_SS)
             self.append_vna_message("\n!!! Test did not complete properly !!!", is_error=True)
         # self.work_timeout = 30
 
@@ -2537,17 +2492,8 @@ class TestStationInterface(QMainWindow):
 
             # Reset UI state
             self.dimmtest_console.clear()
-            self.DIMM_status_label_start.setText("Test: Running...")
-            self.DIMM_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.DIMM_status_label_start.setText('● Running…')
+            self.DIMM_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.start_dimm_progress()
             self.dimm_start_button.setEnabled(False)
 
@@ -2577,17 +2523,8 @@ class TestStationInterface(QMainWindow):
                 self.worker.stop()
                 self.dimm_start_button.setEnabled(True)
             if "Calibration Pass" in line:
-                self.DIMM_status_label_start.setText("Test: Passed")
-                self.DIMM_status_label_start.setStyleSheet("""
-                        QLabel {
-                            background-color: #28a745;
-                            color: white;
-                            padding: 2px 5px;
-                            border-radius: 3px;
-                            font-weight: bold;
-                            font-size: 9pt;
-                        }
-                    """)
+                self.DIMM_status_label_start.setText('● Completed — PASS')
+                self.DIMM_status_label_start.setStyleSheet(self._PILL_PASS_SS)
                 self.append_dimm_message("\n=== DIMM Calibration PASSED ===")
 
                 # Log to Excel
@@ -2604,17 +2541,8 @@ class TestStationInterface(QMainWindow):
                 self.dimm_start_button.setEnabled(True)
 
             elif "Calibration Fail" in line:
-                self.DIMM_status_label_start.setText("Test: Failed")
-                self.DIMM_status_label_start.setStyleSheet("""
-                        QLabel {
-                            background-color: #dc3545;
-                            color: white;
-                            padding: 2px 5px;
-                            border-radius: 3px;
-                            font-weight: bold;
-                            font-size: 9pt;
-                        }
-                    """)
+                self.DIMM_status_label_start.setText('● Completed — FAIL')
+                self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_dimm_message("\n!!! DIMM Calibration FAILED !!!", is_error=True)
 
                 # Log to Excel
@@ -2644,17 +2572,8 @@ class TestStationInterface(QMainWindow):
 
         # If test didn't explicitly pass or fail, mark it as incomplete
         if "Passed" not in self.DIMM_status_label_start.text() and "Failed" not in self.DIMM_status_label_start.text():
-            self.DIMM_status_label_start.setText("Test: Incomplete")
-            self.DIMM_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #6c757d;
-                    color: white;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.DIMM_status_label_start.setText('● Incomplete')
+            self.DIMM_status_label_start.setStyleSheet(self._PILL_GRAY_SS)
             self.append_dimm_message("\n!!! Test did not complete properly !!!", is_error=True)
 
 
@@ -2662,17 +2581,8 @@ class TestStationInterface(QMainWindow):
         self.dimm_timer.stop()
         self.cleanup_resources()
         self.append_dimm_message(f"\n!!! ERROR: {error_msg} !!!", is_error=True)
-        self.DIMM_status_label_start.setText("Test: Error")
-        self.DIMM_status_label_start.setStyleSheet("""
-            QLabel {
-                background-color: #dc3545;
-                color: white;
-                padding: 2px 5px;
-                border-radius: 3px;
-                font-weight: bold;
-                font-size: 9pt;
-            }
-        """)
+        self.DIMM_status_label_start.setText('● Error')
+        self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
         self.dimm_start_button.setEnabled(True)
 
         # Log to Excel
@@ -2689,9 +2599,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to DIMM console"""
         if hasattr(self, 'dimmtest_console') and self.dimmtest_console is not None:
             if is_error:
-                self.dimmtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.dimmtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.dimmtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+                self.dimmtest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
             # Auto-scroll to bottom
             self.dimmtest_console.verticalScrollBar().setValue(
@@ -2702,9 +2612,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to DIMM console"""
         if hasattr(self, 'VNAtest_console') and self.VNAtest_console is not None:
             if is_error:
-                self.VNAtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.VNAtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.VNAtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+                self.VNAtest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
             # Auto-scroll to bottom
             self.VNAtest_console.verticalScrollBar().setValue(
@@ -3212,13 +3122,13 @@ class TestStationInterface(QMainWindow):
 
         if test_passed:
             self.append_self_message("SELF TEST PASS")
-            self.test_status_label_start.setText("Passed")
-            self.test_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
+            self.test_status_label_start.setText("● Completed — PASS")
+            self.test_status_label_start.setStyleSheet(self._PILL_PASS_SS)
         else:
             self.append_self_message("SELF TEST FAIL", is_error=True)
             self.over_all_result = "FAIL"
-            self.test_status_label_start.setText("Failed")
-            self.test_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+            self.test_status_label_start.setText("● Completed — FAIL")
+            self.test_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
 
         # Log to Excel
         #unit_identifier = f"{self.assembly_pn_input.text().strip()} ({self.assembly_sn_input.text().strip()})"
@@ -3359,16 +3269,15 @@ class TestStationInterface(QMainWindow):
 
         panel.setStyleSheet("""
               QGroupBox {
-                  border: 2px solid #aaa;
-                  border-radius: 5px;
-                  margin-top: 10px;
-                  padding-top: 18px;
-                  background: #f8f8f8;
+                  font-weight: bold; font-size: 9pt; color: white;
+                  border: none; border-radius: 6px;
+                  margin-top: 8px; padding-top: 14px;
+                  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                      stop:0 #004D40, stop:1 #00352c);
               }
               QGroupBox::title {
-                  subcontrol-origin: margin;
-                  left: 10px;
-                  padding: 0 5px;
+                  subcontrol-origin: margin; subcontrol-position: top center;
+                  padding: 0 8px; color: white;
               }
           """)
 
@@ -3390,17 +3299,20 @@ class TestStationInterface(QMainWindow):
         # Style the table
         measurement_table.setStyleSheet("""
               QTableWidget {
-                  background-color: white;
-                  gridline-color: #e0e0e0;
+                  background-color: #0d1117;
+                  color: #c9d1d9;
+                  gridline-color: #30363d;
+                  border: none;
               }
               QHeaderView::section {
-                  background-color: #e0e0e0;
+                  background-color: #1f2937;
+                  color: #7dd3fc;
                   padding: 4px;
-                  border: 1px solid #e0e0e0;
+                  border: 1px solid #30363d;
                   font-weight: bold;
               }
               QTableWidget::item {
-                  background-color: #f5f5f5;
+                  background-color: #161b22;
               }
           """)
 
@@ -3415,19 +3327,17 @@ class TestStationInterface(QMainWindow):
         panel_layout.addWidget(table_scroll)
 
         # Add test button
-        test_button = QPushButton(f"Test {zone_name}")
-        test_button.setFont(QFont('Arial', 9))
-        test_button.setFixedHeight(30)
+        test_button = QPushButton(f"▶  Test {zone_name}")
+        test_button.setFont(QFont('Arial', 9, QFont.Bold))
+        test_button.setFixedHeight(32)
+        test_button.setCursor(Qt.PointingHandCursor)
         test_button.setStyleSheet("""
               QPushButton {
-                  min-width: 80px;
-                  padding: 4px;
-                  background: #e0e0e0;
-                  border: 1px solid #aaa;
+                  background-color: #00695C; color: white; border: none;
+                  border-radius: 4px; padding: 4px 8px;
               }
-              QPushButton:hover {
-                  background: #d0d0d0;
-              }
+              QPushButton:hover   { background-color: #004D40; }
+              QPushButton:pressed { background-color: #003d31; }
           """)
         test_button.clicked.connect(lambda _, z=zone_name: self._start_impedance_zone_measurement(z))
         panel_layout.addWidget(test_button, alignment=Qt.AlignCenter)
@@ -3443,16 +3353,15 @@ class TestStationInterface(QMainWindow):
 
         panel.setStyleSheet("""
                QGroupBox {
-                   border: 2px solid #aaa;
-                   border-radius: 5px;
-                   margin-top: 10px;
-                   padding-top: 18px;
-                   background: #f8f8f8;
+                   font-weight: bold; font-size: 9pt; color: white;
+                   border: none; border-radius: 6px;
+                   margin-top: 8px; padding-top: 14px;
+                   background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                       stop:0 #311B92, stop:1 #1a0f5c);
                }
                QGroupBox::title {
-                   subcontrol-origin: margin;
-                   left: 10px;
-                   padding: 0 5px;
+                   subcontrol-origin: margin; subcontrol-position: top center;
+                   padding: 0 8px; color: white;
                }
            """)
 
@@ -3474,17 +3383,20 @@ class TestStationInterface(QMainWindow):
         # Style the table
         measurement_table.setStyleSheet("""
                QTableWidget {
-                   background-color: white;
-                   gridline-color: #e0e0e0;
+                   background-color: #0d1117;
+                   color: #c9d1d9;
+                   gridline-color: #30363d;
+                   border: none;
                }
                QHeaderView::section {
-                   background-color: #e0e0e0;
+                   background-color: #1f2937;
+                   color: #c4b5fd;
                    padding: 4px;
-                   border: 1px solid #e0e0e0;
+                   border: 1px solid #30363d;
                    font-weight: bold;
                }
                QTableWidget::item {
-                   background-color: #f5f5f5;
+                   background-color: #161b22;
                }
            """)
 
@@ -3499,19 +3411,17 @@ class TestStationInterface(QMainWindow):
         panel_layout.addWidget(table_scroll)
 
         # Add test button
-        test_button = QPushButton(f"Test {zone_name}")
-        test_button.setFont(QFont('Arial', 9))
-        test_button.setFixedHeight(30)
+        test_button = QPushButton(f"▶  Test {zone_name}")
+        test_button.setFont(QFont('Arial', 9, QFont.Bold))
+        test_button.setFixedHeight(32)
+        test_button.setCursor(Qt.PointingHandCursor)
         test_button.setStyleSheet("""
                QPushButton {
-                   min-width: 80px;
-                   padding: 4px;
-                   background: #e0e0e0;
-                   border: 1px solid #aaa;
+                   background-color: #4527A0; color: white; border: none;
+                   border-radius: 4px; padding: 4px 8px;
                }
-               QPushButton:hover {
-                   background: #d0d0d0;
-               }
+               QPushButton:hover   { background-color: #311B92; }
+               QPushButton:pressed { background-color: #200d6b; }
            """)
         test_button.clicked.connect(lambda _, z=zone_name: self._start_resistance_zone_measurement(z))
         panel_layout.addWidget(test_button, alignment=Qt.AlignCenter)
@@ -3925,9 +3835,9 @@ class TestStationInterface(QMainWindow):
 
     def _log_Impedance_message(self, message, is_error=False):
         if is_error:
-            self._log_output_imp.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self._log_output_imp.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self._log_output_imp.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+            self._log_output_imp.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
         self._log_output_imp.verticalScrollBar().setValue(
             self._log_output_imp.verticalScrollBar().maximum()
@@ -4145,13 +4055,238 @@ class TestStationInterface(QMainWindow):
 
     def _log_resistance_message(self, message, is_error=False):
         if is_error:
-            self._log_output.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self._log_output.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self._log_output.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+            self._log_output.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         self._log_output.verticalScrollBar().setValue(
             self._log_output.verticalScrollBar().maximum()
         )
 
+
+    # ================================================================== #
+    #  Shared design-system constants & helpers                           #
+    # ================================================================== #
+
+    _DARK_CONSOLE_SS = """
+        QTextBrowser {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-top: none;
+            border-bottom-left-radius: 4px;
+            border-bottom-right-radius: 4px;
+            font-family: 'Courier New', Consolas, monospace;
+            font-size: 10pt;
+            padding: 6px;
+            selection-background-color: #264f78;
+        }
+    """
+
+    _CONSOLE_HDR_SS = """
+        QLabel {
+            background-color: #343a40;
+            color: #adb5bd;
+            font-size: 8pt;
+            font-weight: bold;
+            padding: 4px 8px;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+        }
+    """
+
+    _PILL_READY_SS = (
+        "QLabel { background-color:#17a2b8; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_RUN_SS = (
+        "QLabel { background-color:#fd7e14; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_PASS_SS = (
+        "QLabel { background-color:#28a745; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_FAIL_SS = (
+        "QLabel { background-color:#dc3545; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_GRAY_SS = (
+        "QLabel { background-color:#6c757d; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+
+    _BTN_GREEN_SS = """
+        QPushButton {
+            background-color: #28a745; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #218838; }
+        QPushButton:pressed  { background-color: #1e7e34; }
+        QPushButton:disabled { background-color: #94d3a2; color: #e9f7ed; }
+    """
+    _BTN_RED_SS = """
+        QPushButton {
+            background-color: #dc3545; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #c82333; }
+        QPushButton:pressed  { background-color: #bd2130; }
+        QPushButton:disabled { background-color: #e8a5ac; color: #fce0e3; }
+    """
+    _BTN_TEAL_SS = """
+        QPushButton {
+            background-color: #17a2b8; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #138496; }
+        QPushButton:pressed  { background-color: #117a8b; }
+        QPushButton:disabled { background-color: #8bd4df; color: #d9f3f7; }
+    """
+    _BTN_GRAY_SS = """
+        QPushButton {
+            background-color: #6c757d; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #5a6268; }
+        QPushButton:pressed  { background-color: #4e555b; }
+        QPushButton:disabled { background-color: #adb5bd; color: #e9ecef; }
+    """
+    _BTN_PURPLE_SS = """
+        QPushButton {
+            background-color: #6f42c1; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #5e35b1; }
+        QPushButton:pressed  { background-color: #512da8; }
+        QPushButton:disabled { background-color: #c3a8e8; color: #f1ebfc; }
+    """
+
+    _PROGRESS_SS = """
+        QProgressBar {
+            border: 1px solid #adb5bd; border-radius: 5px; background-color: #e9ecef;
+            text-align: center; font-size: 8pt; color: #343a40;
+        }
+        QProgressBar::chunk {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #28a745, stop:1 #20c997);
+            border-radius: 5px;
+        }
+    """
+
+    _ZONE_PANEL_SS = """
+        QGroupBox {
+            font-weight: bold; font-size: 9pt; color: #fff;
+            border: none; border-radius: 6px;
+            margin-top: 8px; padding-top: 14px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #1565C0, stop:1 #0d47a1);
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin; subcontrol-position: top center;
+            padding: 0 8px; color: white;
+        }
+    """
+
+    _STATE_IDLE_SS = """
+        QLabel {
+            background-color: #e9ecef; color: #6c757d;
+            border: 2px solid #ced4da; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+    _STATE_OPEN_SS = """
+        QLabel {
+            background-color: #dc3545; color: white;
+            border: 2px solid #c82333; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+    _STATE_CLOSED_SS = """
+        QLabel {
+            background-color: #28a745; color: white;
+            border: 2px solid #218838; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+
+    def _make_tab_header(self, title, subtitle, color1="#1565C0", color2="#0288D1"):
+        """Return a styled gradient header QFrame for any tab."""
+        header = QFrame()
+        header.setFixedHeight(68)
+        header.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {color1}, stop:1 {color2});
+                border-radius: 6px;
+            }}
+        """)
+        hdr_l = QVBoxLayout(header)
+        hdr_l.setContentsMargins(16, 6, 16, 6)
+        hdr_l.setSpacing(2)
+        t = QLabel(title)
+        t.setStyleSheet(
+            "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
+        )
+        s = QLabel(subtitle)
+        s.setStyleSheet(
+            "color: rgba(255,255,255,180); font-size: 8pt; background: transparent;"
+        )
+        hdr_l.addWidget(t)
+        hdr_l.addWidget(s)
+        return header
+
+    def _make_status_pill(self, text="● Test: Ready"):
+        """Return a teal 'Ready' status pill label."""
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setMinimumWidth(170)
+        lbl.setStyleSheet(self._PILL_READY_SS)
+        return lbl
+
+    def _make_action_button(self, text, style_ss, min_height=38, min_width=150):
+        """Return a consistently styled action button."""
+        btn = QPushButton(text)
+        btn.setMinimumHeight(min_height)
+        btn.setMinimumWidth(min_width)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(style_ss)
+        return btn
+
+    def _make_controls_row(self, pill, *buttons):
+        """Return an QHBoxLayout: pill | stretch | buttons..."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(pill)
+        row.addStretch()
+        for btn in buttons:
+            row.addWidget(btn)
+        return row
+
+    def _make_styled_progress(self, fmt="%p%", rng=(0, 100)):
+        """Return a gradient styled QProgressBar."""
+        pb = QProgressBar()
+        pb.setRange(*rng)
+        pb.setValue(0)
+        pb.setFormat(fmt)
+        pb.setMinimumHeight(22)
+        pb.setStyleSheet(self._PROGRESS_SS)
+        return pb
+
+    def _make_console_header(self, text="  Test Output"):
+        """Return the dark bar label placed above the dark console."""
+        lbl = QLabel(text)
+        lbl.setStyleSheet(self._CONSOLE_HDR_SS)
+        return lbl
+
+    def _make_dark_console(self, min_height=450, max_height=1500):
+        """Return a styled dark QTextBrowser terminal widget."""
+        c = QTextBrowser()
+        c.setMinimumHeight(min_height)
+        c.setMaximumHeight(max_height)
+        c.setStyleSheet(self._DARK_CONSOLE_SS)
+        return c
+
+    # ================================================================== #
 
     def create_test_tab(self, title, show_progress=False):
         tab = QWidget()
@@ -4180,393 +4315,275 @@ class TestStationInterface(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
 
         if title == "Interlock System Check":
-            # Create the interlock test interface with console-like output
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "Interlock System Check",
+                "Verifies fan interlock and switch interlock state transitions (Open / Closed).",
+                "#b71c1c", "#e53935"
+            ))
 
-            # Status indicators
-            status_layout = QHBoxLayout()
-            self.test_status_label = QLabel('Test: Ready')
-            self.test_status_label.setAlignment(Qt.AlignCenter)
-            self.test_status_label.setStyleSheet("""
-                    QLabel {
-                        background-color: #17a2b8;
-                        color: white;
-                        padding: 2px 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                        font-size: 9pt;
-                    }
-                """)
-            status_layout.addWidget(self.test_status_label)
-
-            test_layout.addLayout(status_layout)
-
-            # Test controls
-            controls_layout = QHBoxLayout()
-
-            self.interlock_start_button = QPushButton('Start Test')
-            self.interlock_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.test_status_label = self._make_status_pill("● Test: Ready")
+            self.interlock_start_button = self._make_action_button(
+                "▶  Start Test", self._BTN_GREEN_SS
+            )
             self.interlock_start_button.clicked.connect(self.start_interlock_test)
-            controls_layout.addWidget(self.interlock_start_button)
-
-            self.interlock_end_button = QPushButton('End Test')
-            self.interlock_end_button.setStyleSheet("background-color: #dc3545; color: white;")
+            self.interlock_end_button = self._make_action_button(
+                "■  End Test", self._BTN_RED_SS
+            )
             self.interlock_end_button.clicked.connect(self.end_interlock_test)
             self.interlock_end_button.setEnabled(False)
-            controls_layout.addWidget(self.interlock_end_button)
+            test_layout.addLayout(
+                self._make_controls_row(
+                    self.test_status_label,
+                    self.interlock_start_button,
+                    self.interlock_end_button,
+                )
+            )
 
-            test_layout.addLayout(controls_layout)
+            # ── Interlock state indicators ─────────────────────────────────
+            interlock_state_group = QGroupBox("Switch State")
+            interlock_state_group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold; font-size: 9pt; color: #333;
+                    border: 1px solid #ced4da; border-radius: 6px;
+                    margin-top: 8px; padding-top: 10px;
+                    background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 12px; padding: 0 6px;
+                }
+            """)
+            state_outer = QHBoxLayout(interlock_state_group)
+            state_outer.setSpacing(12)
+            state_outer.setContentsMargins(12, 14, 12, 10)
 
-            # Interlock status indicators
             self.interlock_status_layout = QHBoxLayout()
-
-            self.interlock_open_label = QLabel('OPEN')
-            self.interlock_open_label.setStyleSheet("""
-                    QLabel {
-                        background-color: lightgray;
-                        color: black;
-                        padding: 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                    }
-                """)
+            self.interlock_open_label = QLabel("🔓  OPEN")
             self.interlock_open_label.setAlignment(Qt.AlignCenter)
-            self.interlock_status_layout.addWidget(self.interlock_open_label)
+            self.interlock_open_label.setMinimumHeight(54)
+            self.interlock_open_label.setStyleSheet(self._STATE_IDLE_SS)
 
-            self.interlock_closed_label = QLabel('CLOSED')
-            self.interlock_closed_label.setStyleSheet("""
-                    QLabel {
-                        background-color: lightgray;
-                        color: black;
-                        padding: 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                    }
-                """)
+            self.interlock_closed_label = QLabel("🔒  CLOSED")
             self.interlock_closed_label.setAlignment(Qt.AlignCenter)
-            self.interlock_status_layout.addWidget(self.interlock_closed_label)
+            self.interlock_closed_label.setMinimumHeight(54)
+            self.interlock_closed_label.setStyleSheet(self._STATE_IDLE_SS)
 
+            state_outer.addWidget(self.interlock_open_label)
+            state_outer.addWidget(self.interlock_closed_label)
+            self.interlock_status_layout.addWidget(interlock_state_group)
             test_layout.addLayout(self.interlock_status_layout)
-            self.interlock_console = QTextBrowser()
-            self.interlock_console.setMinimumHeight(1000)  # Reduced size
-            self.interlock_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.interlock_console.setStyleSheet("""
-                                        QTextBrowser {
-                                            background-color: #f5f5f5;
-                                            border: 1px solid #ddd;
-                                            font-family: monospace;
-                                            font-size: 10pt;
-                                        }
-                                    """)
+
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Interlock Test Output"))
+            self.interlock_console = self._make_dark_console(min_height=600)
             test_layout.addWidget(self.interlock_console)
 
         elif title == "System Self Test":
-            status_layout = QHBoxLayout()
-            self.test_status_label_start = QLabel('Test: Ready')
-            self.test_status_label_start.setAlignment(Qt.AlignCenter)
-            self.test_status_label_start.setStyleSheet("""
-                                QLabel {
-                                    background-color: #17a2b8;
-                                    color: white;
-                                    padding: 2px 5px;
-                                    border-radius: 3px;
-                                    font-weight: bold;
-                                    font-size: 9pt;
-                                }
-                            """)
-            status_layout.addWidget(self.test_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "System Self Test",
+                "Executes a full end-to-end EtherCAT self-diagnostics pass on the DUT.",
+                "#1B5E20", "#388E3C"
+            ))
 
-            test_layout.addLayout(status_layout)
-            controls_layout = QHBoxLayout()
-
-            self.self_start_button = QPushButton('Start Test')
-            self.self_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.test_status_label_start = self._make_status_pill("● Test: Ready")
+            self.self_start_button = self._make_action_button(
+                "▶  Start Test", self._BTN_GREEN_SS
+            )
             self.self_start_button.clicked.connect(self.start_self_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.self_start_button)
-            test_layout.addLayout(controls_layout)
+            test_layout.addLayout(
+                self._make_controls_row(self.test_status_label_start, self.self_start_button)
+            )
 
-            self.selftest_console = QTextBrowser()
-            self.selftest_console.setMinimumHeight(500)  # Reduced size
-            self.selftest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.selftest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                        background-color: #f5f5f5;
-                                                        border: 1px solid #ddd;
-                                                        font-family: monospace;
-                                                        font-size: 10pt;
-                                                    }
-                                                """)
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Self Test Output"))
+            self.selftest_console = self._make_dark_console()
             test_layout.addWidget(self.selftest_console)
 
         elif title == "Impedance Scan":
-            # Create the main widget for this tab
+            # ── Header banner ──────────────────────────────────────────────
             impedance_widget = QWidget()
             impedance_layout = QVBoxLayout(impedance_widget)
-            impedance_layout.setContentsMargins(5, 5, 5, 5)
-            impedance_layout.setSpacing(10)
+            impedance_layout.setContentsMargins(0, 0, 0, 0)
+            impedance_layout.setSpacing(8)
 
-            # Frequency selection controls
+            impedance_layout.addWidget(self._make_tab_header(
+                "Impedance Scan",
+                "Measures complex impedance (R + jX) at selected frequency across all 5 RF zones.",
+                "#004D40", "#00897B"
+            ))
+
+            # ── Control panel ──────────────────────────────────────────────
             control_panel = QGroupBox("Test Parameters")
             control_panel.setStyleSheet("""
-                       QGroupBox {
-                           background-color: #f0f0f0;
-                           border: 1px solid #d0d0d0;
-                           border-radius: 4px;
-                           margin-top: 10px;
-                           padding-top: 15px;
-                       }
-                       QLabel {
-                           font-weight: bold;
-                           color: #333333;
-                       }
-                       QComboBox {
-                           background-color: white;
-                           border: 1px solid #d0d0d0;
-                           padding: 3px;
-                           font-weight: bold;
-                           color: #222222;
-                           min-width: 100px;
-                       }
-                   """)
-
+                QGroupBox {
+                    font-weight: bold; font-size: 9pt; color: #333;
+                    border: 1px solid #ced4da; border-radius: 6px;
+                    margin-top: 8px; padding-top: 10px; background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 12px; padding: 0 6px;
+                }
+                QLabel { font-weight: bold; color: #333; }
+                QComboBox {
+                    background-color: white; border: 1px solid #ced4da;
+                    padding: 4px 8px; font-weight: bold; color: #222; min-width: 120px;
+                    border-radius: 4px;
+                }
+                QComboBox:hover { border-color: #0288D1; }
+            """)
             control_layout = QHBoxLayout(control_panel)
+            control_layout.setContentsMargins(12, 8, 12, 8)
 
-            # Frequency selection
             self.frequencies = ["362.3 KHz", "400 KHz", "500 KHz", "50 MHz", "60 MHz", "70 MHz"]
             freq_label = QLabel("Test Frequency:")
             freq_label.setFont(QFont('Arial', 10))
             self.freq_combo = QComboBox()
             self.freq_combo.addItems(self.frequencies)
-            self.freq_combo.setCurrentIndex(0)  # Default selection
+            self.freq_combo.setCurrentIndex(0)
             self.freq_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
             control_layout.addWidget(freq_label)
             control_layout.addWidget(self.freq_combo)
-
             control_layout.addStretch()
-
             impedance_layout.addWidget(control_panel)
 
-            # Zone setup
+            # ── Zone panels ────────────────────────────────────────────────
             self._zone_names_imp = ["Zone1-Inner", "Zone2-Mid_Inner", "Zone3-Mid_Edge", "Zone4-Edge", "Zone5-Outer"]
             self._relay_values_imp = [0, 1, 2, 4, 8, 16, 32, 64, 127, 128, 135, 141, 142, 143]
             self._measurement_tables_imp = {}
 
-            # Create a scroll area for the zones
             zones_scroll = QScrollArea()
             zones_scroll.setWidgetResizable(True)
             zones_container = QWidget()
             zones_layout = QHBoxLayout(zones_container)
             zones_layout.setContentsMargins(5, 5, 5, 5)
             zones_layout.setSpacing(10)
-
-            # Create zone panels with minimum sizing
             for zone in self._zone_names_imp:
                 zone_panel = self._create_Impedance_zone_panel(zone)
-                zone_panel.setMinimumWidth(250)  # Minimum width for each zone
+                zone_panel.setMinimumWidth(250)
                 zones_layout.addWidget(zone_panel)
-
             zones_scroll.setWidget(zones_container)
-            impedance_layout.addWidget(zones_scroll, stretch=1)  # Takes most of the space
+            impedance_layout.addWidget(zones_scroll, stretch=1)
 
-            # Console output at the bottom
-            console_group = QGroupBox("Measurement Log")
-            console_layout = QVBoxLayout(console_group)
-            self._log_output_imp = QTextBrowser()
-            self._log_output_imp.setMinimumHeight(150)
-            self._log_output_imp.setStyleSheet("""
-                       QTextBrowser {
-                           background-color: #f5f5f5;
-                           border: 1px solid #ddd;
-                           font-family: monospace;
-                           font-size: 10pt;
-                       }
-                   """)
+            # ── Measurement log ────────────────────────────────────────────
+            impedance_layout.addWidget(self._make_console_header("  Measurement Log"))
+            self._log_output_imp = self._make_dark_console(min_height=160, max_height=400)
+            impedance_layout.addWidget(self._log_output_imp)
 
-            clear_button = QPushButton("Clear Log")
-            clear_button.clicked.connect(self._clear_impedance_log_display)
-            clear_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            console_layout.addWidget(self._log_output_imp)
-            console_layout.addWidget(clear_button, alignment=Qt.AlignRight)
-
-            impedance_layout.addWidget(console_group, stretch=0)  # Takes less space
+            clear_btn_imp = self._make_action_button("Clear Log", self._BTN_GRAY_SS,
+                                                     min_height=30, min_width=100)
+            clear_btn_imp.clicked.connect(self._clear_impedance_log_display)
+            clear_btn_imp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            clear_row = QHBoxLayout()
+            clear_row.addStretch()
+            clear_row.addWidget(clear_btn_imp)
+            impedance_layout.addLayout(clear_row)
 
             test_layout.addWidget(impedance_widget)
 
         elif title == "Resistance Test":
-            # Create the main widget for this tab
+            # ── Header banner ──────────────────────────────────────────────
             resistance_widget = QWidget()
             resistance_layout = QVBoxLayout(resistance_widget)
-            resistance_layout.setContentsMargins(5, 5, 5, 5)
-            resistance_layout.setSpacing(10)
+            resistance_layout.setContentsMargins(0, 0, 0, 0)
+            resistance_layout.setSpacing(8)
 
-            # Zone names and relay values
+            resistance_layout.addWidget(self._make_tab_header(
+                "Resistance Test",
+                "Measures DC resistance (Ω) across relay setpoints for each of the 5 RF zones.",
+                "#311B92", "#4527A0"
+            ))
+
+            # ── Zone panels ────────────────────────────────────────────────
             self._zone_names = ["Zone1-Inner", "Zone2-Mid_Inner", "Zone3-Mid_Edge", "Zone4-Edge", "Zone5-Outer"]
             self._relay_values = [0, 1, 2, 4, 8, 16, 32, 64, 127]
             self._measurement_tables = {}
 
-            # Create a scroll area for the zones
             zones_scroll = QScrollArea()
             zones_scroll.setWidgetResizable(True)
             zones_container = QWidget()
             zones_layout = QHBoxLayout(zones_container)
             zones_layout.setContentsMargins(5, 5, 5, 5)
             zones_layout.setSpacing(10)
-
-            # Create zone panels with minimum sizing
             for zone in self._zone_names:
                 zone_panel = self._create_resistance_zone_panel(zone)
-                zone_panel.setMinimumWidth(250)  # Minimum width for each zone
+                zone_panel.setMinimumWidth(250)
                 zones_layout.addWidget(zone_panel)
-
             zones_scroll.setWidget(zones_container)
-            resistance_layout.addWidget(zones_scroll, stretch=1)  # Takes most of the space
+            resistance_layout.addWidget(zones_scroll, stretch=1)
 
-            # Console output at the bottom
-            console_group = QGroupBox("Measurement Log")
-            console_layout = QVBoxLayout(console_group)
-            self._log_output = QTextBrowser()
-            self._log_output.setMinimumHeight(150)
-            self._log_output.setStyleSheet("""
-                        QTextBrowser {
-                            background-color: #f5f5f5;
-                            border: 1px solid #ddd;
-                            font-family: monospace;
-                            font-size: 10pt;
-                        }
-                    """)
+            # ── Measurement log ────────────────────────────────────────────
+            resistance_layout.addWidget(self._make_console_header("  Measurement Log"))
+            self._log_output = self._make_dark_console(min_height=160, max_height=400)
+            resistance_layout.addWidget(self._log_output)
 
-            clear_button = QPushButton("Clear Log")
-            clear_button.clicked.connect(self._clear_resistance_log_display)
-            clear_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            console_layout.addWidget(self._log_output)
-            console_layout.addWidget(clear_button, alignment=Qt.AlignRight)
-
-            resistance_layout.addWidget(console_group, stretch=0)  # Takes less space
+            clear_btn_res = self._make_action_button("Clear Log", self._BTN_GRAY_SS,
+                                                     min_height=30, min_width=100)
+            clear_btn_res.clicked.connect(self._clear_resistance_log_display)
+            clear_btn_res.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            clear_row = QHBoxLayout()
+            clear_row.addStretch()
+            clear_row.addWidget(clear_btn_res)
+            resistance_layout.addLayout(clear_row)
 
             test_layout.addWidget(resistance_widget)
 
         elif title == "DIMM Calibration":
-            DIMM_layout = QHBoxLayout()
-            self.DIMM_status_label_start = QLabel('Test: Ready')
-            self.DIMM_status_label_start.setAlignment(Qt.AlignCenter)
-            self.DIMM_status_label_start.setStyleSheet("""
-                                         QLabel {
-                                             background-color: #17a2b8;
-                                             color: white;
-                                             padding: 2px 5px;
-                                             border-radius: 3px;
-                                             font-weight: bold;
-                                             font-size: 9pt;
-                                         }
-                                     """)
-            DIMM_layout.addWidget(self.DIMM_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "DIMM Calibration",
+                "Runs the DIMM calibration sequence via the remote calibration script.",
+                "#E65100", "#F57C00"
+            ))
 
-            test_layout.addLayout(DIMM_layout)
-            controls_layout = QHBoxLayout()
-
-            self.dimm_start_button = QPushButton('Start calibration')
-            self.dimm_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.DIMM_status_label_start = self._make_status_pill("● Test: Ready")
+            self.dimm_start_button = self._make_action_button(
+                "▶  Start Calibration", self._BTN_GREEN_SS
+            )
             self.dimm_start_button.clicked.connect(self.dimm_cal_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.dimm_start_button)
-            test_layout.addLayout(controls_layout)
-            self.dimm_progress = QProgressBar()
-            self.dimm_progress.setRange(0, 100)
-            self.dimm_progress.setValue(0)
-            self.dimm_progress.setMinimumHeight(20)
-            self.dimm_progress.setStyleSheet("""
-                        QProgressBar {
-                            border: 1px solid grey;
-                            border-radius: 5px;
-                            text-align: center;
-                        }
-                        QProgressBar::chunk {
-                            background-color: #28a745;
-                            width: 10px;
-                        }
-                    """)
+            test_layout.addLayout(
+                self._make_controls_row(self.DIMM_status_label_start, self.dimm_start_button)
+            )
+
+            # ── Progress bar ───────────────────────────────────────────────
+            self.dimm_progress = self._make_styled_progress("%p% complete")
             test_layout.addWidget(self.dimm_progress)
-            # dimm = QProgressBar()
-            # dimm.setValue(0)
-            # dimm.setMinimumHeight(20)
-            # dimm.addWidget(dimm)
 
-            self.dimmtest_console = QTextBrowser()
-            self.dimmtest_console.setMinimumHeight(500)  # Reduced size
-            self.dimmtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.dimmtest_console.setStyleSheet("""
-                                                             QTextBrowser {
-                                                                 background-color: #f5f5f5;
-                                                                 border: 1px solid #ddd;
-                                                                 font-family: monospace;
-                                                                 font-size: 10pt;
-                                                             }
-                                                         """)
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Calibration Output"))
+            self.dimmtest_console = self._make_dark_console()
             test_layout.addWidget(self.dimmtest_console)
+
         elif title == "VNA Calibration":
-            VNA_layout = QHBoxLayout()
-            self.VNA_status_label_start = QLabel('Test: Ready')
-            self.VNA_status_label_start.setAlignment(Qt.AlignCenter)
-            self.VNA_status_label_start.setStyleSheet("""
-                                                     QLabel {
-                                                         background-color: #17a2b8;
-                                                         color: white;
-                                                         padding: 2px 5px;
-                                                         border-radius: 3px;
-                                                         font-weight: bold;
-                                                         font-size: 9pt;
-                                                     }
-                                                 """)
-            VNA_layout.addWidget(self.VNA_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "VNA Calibration",
+                "Performs electronic calibration of the vector network analyser (E-Cal module required).",
+                "#880E4F", "#AD1457"
+            ))
 
-            test_layout.addLayout(VNA_layout)
-
-            controls_layout = QHBoxLayout()
-
-            self.VNA_start_button = QPushButton('Start calibration')
-            self.VNA_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.VNA_status_label_start = self._make_status_pill("● Test: Ready")
+            self.VNA_start_button = self._make_action_button(
+                "▶  Start Calibration", self._BTN_GREEN_SS
+            )
             self.VNA_start_button.clicked.connect(self.VNA_cal_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.VNA_start_button)
-            test_layout.addLayout(controls_layout)
-            self.vna_progress = QProgressBar()
-            self.vna_progress.setRange(0, 100)
-            self.vna_progress.setValue(0)
-            self.vna_progress.setMinimumHeight(20)
-            self.vna_progress.setStyleSheet("""
-                             QProgressBar {
-                                 border: 1px solid grey;
-                                 border-radius: 5px;
-                                 text-align: center;
-                             }
-                             QProgressBar::chunk {
-                                 background-color: #28a745;
-                                 width: 10px;
-                             }
-                         """)
+            test_layout.addLayout(
+                self._make_controls_row(self.VNA_status_label_start, self.VNA_start_button)
+            )
+
+            # ── Progress bar ───────────────────────────────────────────────
+            self.vna_progress = self._make_styled_progress("%p% complete")
             test_layout.addWidget(self.vna_progress)
-            self.VNAtest_console = QTextBrowser()
-            self.VNAtest_console.setMinimumHeight(500)  # Reduced size
-            self.VNAtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.VNAtest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                    background-color: #f5f5f5;
-                                                    border: 1px solid #ddd;
-                                                    font-family: monospace;
-                                                    font-size: 10pt;
-                                                    }
-                                                    """)
+
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Calibration Output"))
+            self.VNAtest_console = self._make_dark_console()
             test_layout.addWidget(self.VNAtest_console)
 
         elif title == "Verify BNC Port":
@@ -4772,9 +4789,9 @@ class TestStationInterface(QMainWindow):
     def append_interlock_message(self, message, is_error=False):
         """Helper method to append colored messages to interlock console"""
         if is_error:
-            self.interlock_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self.interlock_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self.interlock_console.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+            self.interlock_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         # Auto-scroll to bottom
         self.interlock_console.verticalScrollBar().setValue(
             self.interlock_console.verticalScrollBar().maximum()
@@ -4784,9 +4801,9 @@ class TestStationInterface(QMainWindow):
     def append_self_message(self, message, is_error=False):
         """Helper method to append colored messages to interlock console"""
         if is_error:
-            self.selftest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self.selftest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self.selftest_console.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+            self.selftest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         # Auto-scroll to bottom
         self.selftest_console.verticalScrollBar().setValue(
             self.selftest_console.verticalScrollBar().maximum()
@@ -4804,8 +4821,8 @@ class TestStationInterface(QMainWindow):
                 self.handle_ssh_error(f"Connection failed: {message}")
                 self.append_self_message(f"SSH connection Failed", is_error=True)
                 return
-            self.test_status_label_start.setText("Running")
-            self.test_status_label_start.setStyleSheet("background-color: #ffc107; color: black;")
+            self.test_status_label_start.setText("● Running…")
+            self.test_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.append_self_message("\n==================Self Test Started=======================\n")
             self.append_self_message("\nWait Test in process..........\n")
             self.execute_command("selftest", self.handle_self_test_output, 0)
@@ -4855,8 +4872,8 @@ class TestStationInterface(QMainWindow):
             # Update UI
             self.interlock_start_button.setEnabled(False)
             self.interlock_end_button.setEnabled(True)
-            self.test_status_label.setText("Running")
-            self.test_status_label.setStyleSheet("background-color: #ffc107; color: black;")
+            self.test_status_label.setText("● Running…")
+            self.test_status_label.setStyleSheet(self._PILL_RUN_SS)
 
             # Start the thread
             self.worker.start()
@@ -4902,14 +4919,14 @@ class TestStationInterface(QMainWindow):
 
         if "Interlock Open" in line:
             self.open_count += 1
-            self.interlock_open_label.setStyleSheet("background-color: #dc3545; color: white;")
+            self.interlock_open_label.setStyleSheet(self._STATE_OPEN_SS)
             self.interlock_open_label.setText(f"OPEN")
             if self.open_count == 1:
                 self.check_true += 1
                 # self.append_interlock_message("Interlock Open detected")
         elif "Interlock Closed" in line:
             self.closed_count += 1
-            self.interlock_closed_label.setStyleSheet("background-color: #28a745; color: white;")
+            self.interlock_closed_label.setStyleSheet(self._STATE_CLOSED_SS)
             self.interlock_closed_label.setText(f"CLOSED")
             if self.closed_count == 1:
                 self.check_true += 1
@@ -4944,15 +4961,15 @@ class TestStationInterface(QMainWindow):
                 if test_passed:
                     result_msg = "TEST PASSED - Interlock switch detected properly"
                     self.append_interlock_message(result_msg)
-                    self.test_status_label.setText("Passed")
-                    self.test_status_label.setStyleSheet("background-color: #28a745; color: white;")
+                    self.test_status_label.setText("● Completed — PASS")
+                    self.test_status_label.setStyleSheet(self._PILL_PASS_SS)
                     count = True
                 else:
                     result_msg = f"TEST FAILED -  Interlock test Fail"
                     self.over_all_result = 'FAIL'
                     self.append_interlock_message(result_msg, is_error=True)
-                    self.test_status_label.setText("Failed")
-                    self.test_status_label.setStyleSheet("background-color: #dc3545; color: white;")
+                    self.test_status_label.setText("● Completed — FAIL")
+                    self.test_status_label.setStyleSheet(self._PILL_FAIL_SS)
                     # Log to Excel
 
                 self.excel_logger.log_interlock_test(
@@ -5032,14 +5049,21 @@ class TestStationInterface(QMainWindow):
         self.interlock_start_button.setEnabled(True)
         self.interlock_end_button.setEnabled(False)
         self.test_status_label.setText("Test: Ready")
-        self.test_status_label.setStyleSheet("background-color: #17a2b8; color: white;")
+        self.test_status_label.setStyleSheet(self._PILL_READY_SS)
 
 
     def create_unit_setup_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+
+        # ── Header banner ──────────────────────────────────────────────────
+        layout.addWidget(self._make_tab_header(
+            "Unit Setup",
+            "Enter PCB / assembly information, connect to the Raspberry Pi, and program the OTP.",
+            "#1a237e", "#283593"
+        ))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -5370,18 +5394,8 @@ class TestStationInterface(QMainWindow):
         console_layout.setSpacing(5)
 
         console_buttons = QHBoxLayout()
-        clear_btn = QPushButton("Clear Console")
-        clear_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #6c757d;
-                    color: white;
-                    padding: 5px 10px;
-                    font-size: 14px;
-                }
-                QPushButton:hover {
-                    background-color: #5a6268;
-                }
-            """)
+        clear_btn = self._make_action_button("⌫  Clear Console", self._BTN_GRAY_SS,
+                                             min_height=30, min_width=120)
         clear_btn.clicked.connect(lambda: self.console_output.clear() if hasattr(self, 'console_output') else None)
         console_buttons.addWidget(clear_btn)
         console_buttons.addStretch()
@@ -5389,18 +5403,20 @@ class TestStationInterface(QMainWindow):
 
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setAcceptRichText(True)  # Enable rich text formatting
+        self.console_output.setAcceptRichText(True)
         self.console_output.setStyleSheet("""
-                QTextEdit {
-                    background-color: #f8f9fa;
-                    border: 1px solid #ced4da;
-                    border-radius: 4px;
-                    font-family: 'Courier New', monospace;
-                    font-size: 30px;
-                    padding: 5px;
-                    min-height: 1000px;
-                }
-            """)
+            QTextEdit {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                font-family: 'Courier New', Consolas, monospace;
+                font-size: 11pt;
+                padding: 6px;
+                min-height: 600px;
+                selection-background-color: #264f78;
+            }
+        """)
         console_layout.addWidget(self.console_output)
         config_layout.addWidget(console_group)
         config_layout.addStretch(1)
@@ -5419,32 +5435,38 @@ class TestStationInterface(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
+        # ── Header banner ──────────────────────────────────────────────────
+        layout.addWidget(self._make_tab_header(
+            "RPI Console",
+            "Interactive SSH terminal connected to the Raspberry Pi manufacturing controller.",
+            "#212121", "#37474F"
+        ))
+
         # Terminal widget (created first so buttons can reference it directly)
         self._ssh_console_output = TerminalWidget()
 
         # ── Status / control bar ──────────────────────────────────────────
         status_bar = QHBoxLayout()
+        status_bar.setSpacing(8)
         rpi_host = self.ssh_handler.host
-        self._ssh_console_status = QLabel(f"Disconnected  |  Host: {rpi_host}")
-        self._ssh_console_status.setStyleSheet(
-            "background-color: #6c757d; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
-        )
+        self._ssh_console_status = QLabel(f"⬤  Disconnected  |  {rpi_host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_GRAY_SS)
         status_bar.addWidget(self._ssh_console_status)
         status_bar.addStretch()
 
-        self._ssh_connect_btn = QPushButton("Connect")
-        self._ssh_connect_btn.setStyleSheet("background-color: #28a745; color: white; padding: 4px 12px;")
+        self._ssh_connect_btn = self._make_action_button("⚡  Connect", self._BTN_GREEN_SS,
+                                                         min_height=32, min_width=110)
         self._ssh_connect_btn.clicked.connect(self._ssh_console_connect)
         status_bar.addWidget(self._ssh_connect_btn)
 
-        self._ssh_disconnect_btn = QPushButton("Disconnect")
-        self._ssh_disconnect_btn.setStyleSheet("background-color: #dc3545; color: white; padding: 4px 12px;")
+        self._ssh_disconnect_btn = self._make_action_button("✕  Disconnect", self._BTN_RED_SS,
+                                                            min_height=32, min_width=110)
         self._ssh_disconnect_btn.setEnabled(False)
         self._ssh_disconnect_btn.clicked.connect(self._ssh_console_disconnect)
         status_bar.addWidget(self._ssh_disconnect_btn)
 
-        clear_btn = QPushButton("Clear")
-        clear_btn.setStyleSheet("background-color: #6c757d; color: white; padding: 4px 12px;")
+        clear_btn = self._make_action_button("⌫  Clear", self._BTN_GRAY_SS,
+                                             min_height=32, min_width=80)
         clear_btn.clicked.connect(self._ssh_console_output.clear)
         status_bar.addWidget(clear_btn)
 
@@ -5453,20 +5475,16 @@ class TestStationInterface(QMainWindow):
 
         # ── SCP file transfer bar ─────────────────────────────────────────
         scp_bar = QHBoxLayout()
-        scp_bar.setSpacing(6)
+        scp_bar.setSpacing(8)
 
-        self._scp_upload_btn = QPushButton("⬆  Upload to RPI")
-        self._scp_upload_btn.setStyleSheet(
-            "background-color: #17a2b8; color: white; padding: 4px 12px;"
-        )
+        self._scp_upload_btn = self._make_action_button("⬆  Upload to RPI", self._BTN_TEAL_SS,
+                                                        min_height=32, min_width=140)
         self._scp_upload_btn.setEnabled(False)
         self._scp_upload_btn.clicked.connect(self._scp_upload)
         scp_bar.addWidget(self._scp_upload_btn)
 
-        self._scp_download_btn = QPushButton("⬇  Download from RPI")
-        self._scp_download_btn.setStyleSheet(
-            "background-color: #6610f2; color: white; padding: 4px 12px;"
-        )
+        self._scp_download_btn = self._make_action_button("⬇  Download from RPI", self._BTN_PURPLE_SS,
+                                                          min_height=32, min_width=160)
         self._scp_download_btn.setEnabled(False)
         self._scp_download_btn.clicked.connect(self._scp_download)
         scp_bar.addWidget(self._scp_download_btn)
@@ -5500,10 +5518,8 @@ class TestStationInterface(QMainWindow):
         self._ssh_console_worker.error_occurred.connect(self._ssh_console_on_error)
         self._ssh_console_worker.start()
         self._ssh_connect_btn.setEnabled(False)
-        self._ssh_console_status.setText(f"Connecting…  |  Host: {h.host}")
-        self._ssh_console_status.setStyleSheet(
-            "background-color: #ffc107; color: black; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
-        )
+        self._ssh_console_status.setText(f"⬤  Connecting…  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_RUN_SS)
 
     def _ssh_console_disconnect(self):
         """Stop the SSH console worker."""
@@ -5516,10 +5532,8 @@ class TestStationInterface(QMainWindow):
 
     def _ssh_console_on_connected(self):
         h = self.ssh_handler
-        self._ssh_console_status.setText(f"Connected  |  Host: {h.host}")
-        self._ssh_console_status.setStyleSheet(
-            "background-color: #28a745; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
-        )
+        self._ssh_console_status.setText(f"⬤  Connected  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_PASS_SS)
         self._ssh_connect_btn.setEnabled(False)
         self._ssh_disconnect_btn.setEnabled(True)
         self._scp_upload_btn.setEnabled(True)
@@ -5529,10 +5543,8 @@ class TestStationInterface(QMainWindow):
 
     def _ssh_console_on_disconnected(self):
         h = self.ssh_handler
-        self._ssh_console_status.setText(f"Disconnected  |  Host: {h.host}")
-        self._ssh_console_status.setStyleSheet(
-            "background-color: #6c757d; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold;"
-        )
+        self._ssh_console_status.setText(f"⬤  Disconnected  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_GRAY_SS)
         self._ssh_connect_btn.setEnabled(True)
         self._ssh_disconnect_btn.setEnabled(False)
         self._scp_upload_btn.setEnabled(False)
