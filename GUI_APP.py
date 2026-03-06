@@ -117,7 +117,8 @@ class ExcelLogger:
         self.pn=''
         self.sn=''
         self.excel_time=datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._is_finalized = False  # Set True after update_overall_result makes file read-only
+        self._is_finalized = False        # Set True after update_overall_result makes file read-only
+        self._current_result = None       # Tracks worst result seen; FAIL is sticky (never downgraded to PASS)
 
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -429,13 +430,33 @@ class ExcelLogger:
             sheet.freeze_panes = "A23"  # Freeze above the STEP section
 
     @log_function
-    def update_overall_result(self, result, PN='NA', SN='NA'):
-        """Update the overall result and rename file accordingly"""
+    def update_overall_result(self, result, PN='NA', SN='NA', finalize=True):
+        """Update the overall result and rename file accordingly.
+
+        Args:
+            result:   'PASS' or 'FAIL' (case-insensitive).
+            PN:       Product Number – stored on the logger when provided.
+            SN:       Serial Number  – stored on the logger when provided.
+            finalize: When *True* (the default) the workbook is password-
+                      protected, saved, and the file is made read-only so it
+                      cannot be modified after the test run.  Pass
+                      ``finalize=False`` for intermediate per-step calls that
+                      should only rename the file without locking it, so that
+                      subsequent logging calls can still write data.
+        """
         try:
             result = result.upper()
             if result not in ['PASS', 'FAIL']:
                 self.logger1.warning(f"Invalid result: {result}. Must be 'PASS' or 'FAIL'")
                 return False
+
+            # FAIL is sticky: once any test section has produced a FAIL the
+            # overall result must remain FAIL, regardless of later PASS results
+            # from other test sections (e.g. BNC passing after resistance fails).
+            if self._current_result == 'FAIL':
+                result = 'FAIL'
+            else:
+                self._current_result = result  # promote: None → value, PASS → FAIL
 
             if PN != 'NA' and SN != 'NA':
                 self.pn = PN
@@ -449,6 +470,18 @@ class ExcelLogger:
             # If file already exists with different name, rename it
             if self.file_path != new_file_path:
                 if os.path.exists(self.file_path):
+                    # If the file was already finalized as read-only (e.g. it
+                    # was previously named _PASS.xlsx), we must temporarily
+                    # restore write access so the rename succeeds.
+                    if self._is_finalized:
+                        os.chmod(self.file_path,
+                                 stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+                        self._is_finalized = False
+                        self.logger1.info(
+                            "Temporarily restored write access to allow rename.",
+                            extra={'func_name': 'update_overall_result'}
+                        )
+
                     # Close the workbook before renaming
                     self.workbook.close()
 
@@ -461,8 +494,9 @@ class ExcelLogger:
                     self.logger1.info(f"Renamed file to: {new_file_path}",
                                       extra={'func_name': 'update_overall_result'})
 
-            # Make the result file read-only so it cannot be edited after the test run
-            if os.path.exists(self.file_path):
+            # Apply protection and read-only only when finalize=True AND the
+            # workbook has not already been finalized in this state.
+            if finalize and not self._is_finalized and os.path.exists(self.file_path):
                 # Apply password-protection to all sheets before locking the file
                 self._protect_all_sheets()
                 self.workbook.save(self.file_path)
@@ -2532,7 +2566,7 @@ class TestStationInterface(QMainWindow):
                 'firmware_version': self.firmware_version.text().strip()
             }
             self.excel_logger.log_unit_setup(unit_data)
-            self.excel_logger.update_overall_result(self.test_result, PN=self.PN, SN=self.SN)
+            self.excel_logger.update_overall_result(self.test_result, PN=self.PN, SN=self.SN, finalize=False)
 
         except Exception as e:
             # self.logger.error(f"Error in auto_load_connect: {str(e)}",exc_info=True,extra={'func_name': 'auto_load_connect'} )
@@ -2718,7 +2752,9 @@ class TestStationInterface(QMainWindow):
             if self.bnc_t >= 1:
                 self.excel_logger.reset_sheet("BNC Port Verification")
             self.bnc_t += 1
-            self.over_all_result = 'PASS'
+            # Do NOT reset over_all_result here — failures from prior test
+            # sections (resistance, impedance, etc.) must persist in the
+            # overall result so the final filename reflects them.
 
             # Stop any previously running worker
             if hasattr(self, 'worker') and self.worker:
@@ -3649,7 +3685,7 @@ class TestStationInterface(QMainWindow):
                                 'overall_result': self.over_all_result
                             }
                         )
-                    self.excel_logger.update_overall_result(self.over_all_result)
+                    self.excel_logger.update_overall_result(self.over_all_result, finalize=False)
 
                     #self._log_resistance_message(f"Inside block5", is_error=True)
                     # Update the table
@@ -3919,7 +3955,7 @@ class TestStationInterface(QMainWindow):
                             }
                         )
                     """
-                    self.excel_logger.update_overall_result(self.over_all_result)
+                    self.excel_logger.update_overall_result(self.over_all_result, finalize=False)
                     # Update the table
                     self.update_impedance_measurement(
                         zone_name,
