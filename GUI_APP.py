@@ -102,6 +102,8 @@ logger, log_function = setup_logging()
 
 
 class ExcelLogger:
+    SHEET_PASSWORD = os.environ.get("EXCEL_SHEET_PASSWORD", "Admin@1234")
+
     def __init__(self, file_path=os.path.join('C:/tmp', f'test_station_records_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')):
         self.file_path = file_path
         self.workbook = None
@@ -159,6 +161,21 @@ class ExcelLogger:
     def _freq_to_sheet_suffix(freq_text):
         """Convert frequency text to a safe sheet name suffix e.g. '60 MHz' -> '60MHz'"""
         return freq_text.replace(' ', '').replace('.', '_')
+
+    def _protect_all_sheets(self):
+        """Apply password protection to every worksheet in the workbook.
+
+        After protection is enabled users can still navigate and read cells,
+        but any attempt to edit cell content, insert/delete rows or columns,
+        or change formatting will prompt for the password before the action
+        is allowed.  The password is taken from the ``SHEET_PASSWORD`` class
+        attribute (defaults to the ``EXCEL_SHEET_PASSWORD`` environment
+        variable or "Admin@1234" if that variable is not set).
+        """
+        for sheet in self.workbook.worksheets:
+            sheet.protection.sheet = True
+            sheet.protection.password = self.SHEET_PASSWORD
+            sheet.protection.enable()
 
     @log_function
     def reset_sheet(self, sheet_name):
@@ -429,6 +446,11 @@ class ExcelLogger:
 
             # Make the result file read-only so it cannot be edited after the test run
             if os.path.exists(self.file_path):
+                # Apply password-protection to all sheets before locking the file
+                self._protect_all_sheets()
+                self.workbook.save(self.file_path)
+                self.logger1.info(f"Applied sheet protection to: {self.file_path}",
+                                  extra={'func_name': 'update_overall_result'})
                 os.chmod(self.file_path,
                          stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
                 self.logger1.info(f"Set file as read-only: {self.file_path}",
