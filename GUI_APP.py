@@ -3854,6 +3854,11 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
             return
 
+        if "No data found for frequencies" in line:
+            self._log_Impedance_message(line.strip(), is_error=True)
+            self.worker.stop()
+            return
+
         if self.names1 in line:
             self._log_Impedance_message(f"Starting measurement for {line}")
 
