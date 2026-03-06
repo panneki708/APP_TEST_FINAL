@@ -117,6 +117,7 @@ class ExcelLogger:
         self.pn=''
         self.sn=''
         self.excel_time=datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._is_finalized = False  # Set True after update_overall_result makes file read-only
 
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -177,6 +178,22 @@ class ExcelLogger:
             sheet.protection.password = self.SHEET_PASSWORD
             sheet.protection.enable()
 
+    def _save_workbook(self):
+        """Save the workbook to disk, unless the file has already been finalized.
+
+        After ``update_overall_result`` password-protects the sheets and marks
+        the file read-only, any further save attempt would raise a
+        ``PermissionError``.  This helper checks the ``_is_finalized`` flag and
+        silently skips the save when the file is already locked.
+        """
+        if self._is_finalized:
+            self.logger1.debug(
+                "Skipping save: workbook is already finalized (read-only).",
+                extra={'func_name': '_save_workbook'}
+            )
+            return
+        self.workbook.save(self.file_path)
+
     @log_function
     def reset_sheet(self, sheet_name):
         """Clear all data from a specific sheet (except headers) and recreate headers if needed"""
@@ -218,7 +235,7 @@ class ExcelLogger:
             elif sheet_name == "Unit Setup":
                 self._create_unit_headers(sheet)
 
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Reset sheet '{sheet_name}' successfully",
                               extra={'func_name': 'reset_sheet'})
             return True
@@ -232,7 +249,7 @@ class ExcelLogger:
         if sheet_name not in self.workbook.sheetnames:
             sheet = self.workbook.create_sheet(sheet_name)
             create_headers_func(sheet)
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             return sheet
         return self.workbook[sheet_name]
 
@@ -455,6 +472,9 @@ class ExcelLogger:
                          stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
                 self.logger1.info(f"Set file as read-only: {self.file_path}",
                                   extra={'func_name': 'update_overall_result'})
+                self._is_finalized = True
+                self.logger1.info("Workbook finalized; further saves are disabled.",
+                                  extra={'func_name': 'update_overall_result'})
 
             return True
 
@@ -509,7 +529,7 @@ class ExcelLogger:
                     )
 
             self.unit_sheet.append([])
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged unit setup data to {self.file_path}",
                               extra={'func_name': 'log_unit_setup'})
             return True
@@ -556,7 +576,7 @@ class ExcelLogger:
             self.interlock_sheet.cell(row=row_num, column=6, value=notes)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged interlock test result to {self.file_path}",
                               extra={'func_name': 'Log_interlock_test'})
             return True
@@ -602,7 +622,7 @@ class ExcelLogger:
             self.self_test_sheet.cell(row=row_num, column=5, value=notes)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged self test result to {self.file_path}",
                               extra={'func_name': 'Log_self_test'})
             return True
@@ -647,7 +667,7 @@ class ExcelLogger:
             self.resistance_sheet.cell(row=row_num, column=6, value=measurement_data['table_row'])
 
             # Save workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(
                 f"Logged resistance data to combined worksheet",
                 extra={'func_name': 'log_resistance_measurement'}
@@ -787,7 +807,7 @@ class ExcelLogger:
             self._update_overall_result_based_on_teststep_status(summary_sheet)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info("Logged summary data successfully",
                               extra={'func_name': 'log_summary'})
             return True
@@ -950,7 +970,7 @@ class ExcelLogger:
                 )
 
             # Save workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(
                 f"Logged impedance data to combined worksheet",
                 extra={'func_name': 'log_impedance_measurement'}
@@ -1000,7 +1020,7 @@ class ExcelLogger:
             result_cell.alignment = Alignment(horizontal='center')
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged BNC test result to {self.file_path}",
                               extra={'func_name': 'Log_BNC_test'})
             return True
