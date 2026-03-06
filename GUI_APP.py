@@ -2091,6 +2091,15 @@ class TestStationInterface(QMainWindow):
                 self.worker.stop()
                 self.VNA_start_button.setEnabled(True)
 
+            if "mailbox error" in line.lower():
+                self.append_vna_message(
+                    "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                    is_error=True
+                )
+                self.worker.stop()
+                self.VNA_start_button.setEnabled(True)
+                return
+
             if "Calibration PASS" in line:
                 self.VNA_status_label_start.setText('● Completed — PASS')
                 self.VNA_status_label_start.setStyleSheet(self._PILL_PASS_SS)
@@ -2232,6 +2241,13 @@ class TestStationInterface(QMainWindow):
         self.execute_command("programotp", self.handle_otp_test_output, 0)
 
     def handle_otp_test_output(self,stdout, stderr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return
+
         test_passed = "UPDATE_PASS" in stdout
         test_details = stdout.strip()
 
@@ -2522,6 +2538,17 @@ class TestStationInterface(QMainWindow):
                 self.dimm_timer.stop()
                 self.worker.stop()
                 self.dimm_start_button.setEnabled(True)
+
+            if "mailbox error" in line.lower():
+                self.append_dimm_message(
+                    "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                    is_error=True
+                )
+                self.dimm_timer.stop()
+                self.worker.stop()
+                self.dimm_start_button.setEnabled(True)
+                return
+
             if "Calibration Pass" in line:
                 self.DIMM_status_label_start.setText('● Completed — PASS')
                 self.DIMM_status_label_start.setStyleSheet(self._PILL_PASS_SS)
@@ -2950,6 +2977,14 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
             return
 
+        if "mailbox error" in line.lower():
+            self.append_BNC_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            self.worker.stop()
+            return
+
         # --- Zone result dispatch -------------------------------------------
         if "Zone2-Mid_Inner" in line:
             self._handle_bnc_zone_result("Zone2-Mid_Inner", "Zone2", line, next_zone_number=3)
@@ -3033,6 +3068,13 @@ class TestStationInterface(QMainWindow):
     def handle_otpcheck_output(self, stdout, stderr):
         self.handling_flag = 1
 
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         if "No such file or directory" in stderr:
             error_msg = "ERROR: No OTP file found on device\n"
             self.console_output.append("!!! CRITICAL ERROR !!!\n")
@@ -3090,6 +3132,13 @@ class TestStationInterface(QMainWindow):
             return True
 
     def handle_firmare_check_output(self, stdout, sterr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (sterr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return
+
         parsed_data = self.parse_ssh_output(stdout)
         Actual_version = parsed_data['firmware_version']
         Expected_version = self.config["expected_firmware_version"]
@@ -3108,6 +3157,13 @@ class TestStationInterface(QMainWindow):
             self.test_result = 'FAIL'
 
     def handle_self_test_output(self, stdout, sterr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (sterr or "").lower():
+            self.append_self_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         test_passed = "Self Test PASS" in stdout
         test_details = stdout.strip()
 
@@ -3169,6 +3225,13 @@ class TestStationInterface(QMainWindow):
     def handle_soemcompile_output(self, stdout, stderr):
         self.handling_flag = 2
 
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         # Analyze the output
         analysis = self.check_output_for_strings(stdout)
 
@@ -3199,6 +3262,14 @@ class TestStationInterface(QMainWindow):
 
     def handle_slaveinfo_output(self, stdout, stderr):
         Counter = 0
+
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         if not self.check:
             return False
 
@@ -3859,6 +3930,14 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
             return
 
+        if "mailbox error" in line.lower():
+            self._log_Impedance_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            self.worker.stop()
+            return
+
         if self.names1 in line:
             self._log_Impedance_message(f"Starting measurement for {line}")
 
@@ -3995,6 +4074,14 @@ class TestStationInterface(QMainWindow):
                 self,
                 "PyVISA Error",
                 f"A PyVISA error occurred: {line.strip()}"
+            )
+            self.worker.stop()
+            return
+
+        if "mailbox error" in line.lower():
+            self._log_resistance_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
             )
             self.worker.stop()
             return
@@ -4891,6 +4978,15 @@ class TestStationInterface(QMainWindow):
             )
             self.interlock_start_button.setEnabled(True)
             self.worker.stop()
+
+        if "mailbox error" in line.lower():
+            self.append_interlock_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            self.interlock_start_button.setEnabled(True)
+            self.worker.stop()
+            return
 
         if "Cooling Fan Working" in line:
             self.fan_interlock = True
