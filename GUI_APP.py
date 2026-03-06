@@ -1,4 +1,5 @@
 import sys
+import socket
 import paramiko
 import re
 import json
@@ -8,12 +9,15 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QComboBox, QTextEdit,
     QGroupBox, QTabWidget, QScrollArea, QProgressBar,
     QTextBrowser, QFrame, QSizePolicy, QMessageBox, QSpacerItem,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QPlainTextEdit, QInputDialog, QFileDialog,
+    QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject, QDate, QThread, QTimer
 from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtWidgets import QDateEdit
 import os
+import stat
 import logging
 from logging.handlers import RotatingFileHandler
 from openpyxl import Workbook
@@ -98,6 +102,8 @@ logger, log_function = setup_logging()
 
 
 class ExcelLogger:
+    SHEET_PASSWORD = os.environ.get("EXCEL_SHEET_PASSWORD", "Admin@1234")
+
     def __init__(self, file_path=os.path.join('C:/tmp', f'test_station_records_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx')):
         self.file_path = file_path
         self.workbook = None
@@ -111,6 +117,8 @@ class ExcelLogger:
         self.pn=''
         self.sn=''
         self.excel_time=datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._is_finalized = False        # Set True after update_overall_result makes file read-only
+        self._current_result = None       # Tracks worst result seen; FAIL is sticky (never downgraded to PASS)
 
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -156,6 +164,37 @@ class ExcelLogger:
         """Convert frequency text to a safe sheet name suffix e.g. '60 MHz' -> '60MHz'"""
         return freq_text.replace(' ', '').replace('.', '_')
 
+    def _protect_all_sheets(self):
+        """Apply password protection to every worksheet in the workbook.
+
+        After protection is enabled users can still navigate and read cells,
+        but any attempt to edit cell content, insert/delete rows or columns,
+        or change formatting will prompt for the password before the action
+        is allowed.  The password is taken from the ``SHEET_PASSWORD`` class
+        attribute (defaults to the ``EXCEL_SHEET_PASSWORD`` environment
+        variable or "Admin@1234" if that variable is not set).
+        """
+        for sheet in self.workbook.worksheets:
+            sheet.protection.sheet = True
+            sheet.protection.password = self.SHEET_PASSWORD
+            sheet.protection.enable()
+
+    def _save_workbook(self):
+        """Save the workbook to disk, unless the file has already been finalized.
+
+        After ``update_overall_result`` password-protects the sheets and marks
+        the file read-only, any further save attempt would raise a
+        ``PermissionError``.  This helper checks the ``_is_finalized`` flag and
+        silently skips the save when the file is already locked.
+        """
+        if self._is_finalized:
+            self.logger1.debug(
+                "Skipping save: workbook is already finalized (read-only).",
+                extra={'func_name': '_save_workbook'}
+            )
+            return
+        self.workbook.save(self.file_path)
+
     @log_function
     def reset_sheet(self, sheet_name):
         """Clear all data from a specific sheet (except headers) and recreate headers if needed"""
@@ -197,7 +236,7 @@ class ExcelLogger:
             elif sheet_name == "Unit Setup":
                 self._create_unit_headers(sheet)
 
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Reset sheet '{sheet_name}' successfully",
                               extra={'func_name': 'reset_sheet'})
             return True
@@ -211,7 +250,7 @@ class ExcelLogger:
         if sheet_name not in self.workbook.sheetnames:
             sheet = self.workbook.create_sheet(sheet_name)
             create_headers_func(sheet)
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             return sheet
         return self.workbook[sheet_name]
 
@@ -391,13 +430,33 @@ class ExcelLogger:
             sheet.freeze_panes = "A23"  # Freeze above the STEP section
 
     @log_function
-    def update_overall_result(self, result, PN='NA', SN='NA'):
-        """Update the overall result and rename file accordingly"""
+    def update_overall_result(self, result, PN='NA', SN='NA', finalize=True):
+        """Update the overall result and rename file accordingly.
+
+        Args:
+            result:   'PASS' or 'FAIL' (case-insensitive).
+            PN:       Product Number – stored on the logger when provided.
+            SN:       Serial Number  – stored on the logger when provided.
+            finalize: When *True* (the default) the workbook is password-
+                      protected, saved, and the file is made read-only so it
+                      cannot be modified after the test run.  Pass
+                      ``finalize=False`` for intermediate per-step calls that
+                      should only rename the file without locking it, so that
+                      subsequent logging calls can still write data.
+        """
         try:
             result = result.upper()
             if result not in ['PASS', 'FAIL']:
                 self.logger1.warning(f"Invalid result: {result}. Must be 'PASS' or 'FAIL'")
                 return False
+
+            # FAIL is sticky: once any test section has produced a FAIL the
+            # overall result must remain FAIL, regardless of later PASS results
+            # from other test sections (e.g. BNC passing after resistance fails).
+            if self._current_result == 'FAIL':
+                result = 'FAIL'
+            else:
+                self._current_result = result  # promote: None → value, PASS → FAIL
 
             if PN != 'NA' and SN != 'NA':
                 self.pn = PN
@@ -411,6 +470,18 @@ class ExcelLogger:
             # If file already exists with different name, rename it
             if self.file_path != new_file_path:
                 if os.path.exists(self.file_path):
+                    # If the file was already finalized as read-only (e.g. it
+                    # was previously named _PASS.xlsx), we must temporarily
+                    # restore write access so the rename succeeds.
+                    if self._is_finalized:
+                        os.chmod(self.file_path,
+                                 stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+                        self._is_finalized = False
+                        self.logger1.info(
+                            "Temporarily restored write access to allow rename.",
+                            extra={'func_name': 'update_overall_result'}
+                        )
+
                     # Close the workbook before renaming
                     self.workbook.close()
 
@@ -422,6 +493,22 @@ class ExcelLogger:
                     self.workbook = load_workbook(self.file_path)
                     self.logger1.info(f"Renamed file to: {new_file_path}",
                                       extra={'func_name': 'update_overall_result'})
+
+            # Apply protection and read-only only when finalize=True AND the
+            # workbook has not already been finalized in this state.
+            if finalize and not self._is_finalized and os.path.exists(self.file_path):
+                # Apply password-protection to all sheets before locking the file
+                self._protect_all_sheets()
+                self.workbook.save(self.file_path)
+                self.logger1.info(f"Applied sheet protection to: {self.file_path}",
+                                  extra={'func_name': 'update_overall_result'})
+                os.chmod(self.file_path,
+                         stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+                self.logger1.info(f"Set file as read-only: {self.file_path}",
+                                  extra={'func_name': 'update_overall_result'})
+                self._is_finalized = True
+                self.logger1.info("Workbook finalized; further saves are disabled.",
+                                  extra={'func_name': 'update_overall_result'})
 
             return True
 
@@ -476,7 +563,7 @@ class ExcelLogger:
                     )
 
             self.unit_sheet.append([])
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged unit setup data to {self.file_path}",
                               extra={'func_name': 'log_unit_setup'})
             return True
@@ -523,7 +610,7 @@ class ExcelLogger:
             self.interlock_sheet.cell(row=row_num, column=6, value=notes)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged interlock test result to {self.file_path}",
                               extra={'func_name': 'Log_interlock_test'})
             return True
@@ -569,7 +656,7 @@ class ExcelLogger:
             self.self_test_sheet.cell(row=row_num, column=5, value=notes)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged self test result to {self.file_path}",
                               extra={'func_name': 'Log_self_test'})
             return True
@@ -614,7 +701,7 @@ class ExcelLogger:
             self.resistance_sheet.cell(row=row_num, column=6, value=measurement_data['table_row'])
 
             # Save workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(
                 f"Logged resistance data to combined worksheet",
                 extra={'func_name': 'log_resistance_measurement'}
@@ -754,7 +841,7 @@ class ExcelLogger:
             self._update_overall_result_based_on_teststep_status(summary_sheet)
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info("Logged summary data successfully",
                               extra={'func_name': 'log_summary'})
             return True
@@ -917,7 +1004,7 @@ class ExcelLogger:
                 )
 
             # Save workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(
                 f"Logged impedance data to combined worksheet",
                 extra={'func_name': 'log_impedance_measurement'}
@@ -953,7 +1040,6 @@ class ExcelLogger:
             )
             self.BNC_sheet.cell(row=row_num, column=2, value=test_zone)
             self.BNC_sheet.cell(row=row_num, column=3, value=test_details)
-            print(test_passed)
             # Test Result with color coding
             result_cell = self.BNC_sheet.cell(
                 row=row_num, column=4,
@@ -968,7 +1054,7 @@ class ExcelLogger:
             result_cell.alignment = Alignment(horizontal='center')
 
             # Save the workbook
-            self.workbook.save(self.file_path)
+            self._save_workbook()
             self.logger1.info(f"Logged BNC test result to {self.file_path}",
                               extra={'func_name': 'Log_BNC_test'})
             return True
@@ -1154,6 +1240,560 @@ class Worker(QThread):
     def cleanup(self):
         if hasattr(self.ssh_handler, 'SSH_disconnect'):
             self.ssh_handler.SSH_disconnect()
+
+
+class SshConsoleWorker(QThread):
+    """Worker thread that opens an interactive SSH shell and streams output."""
+    output_ready = pyqtSignal(str)
+    connected = pyqtSignal()
+    disconnected = pyqtSignal()
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, host, port, username, password):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self._is_running = False
+        self._channel = None
+        self._channel_lock = __import__('threading').Lock()
+        self._ssh = None
+
+    def run(self):
+        self._is_running = True
+        try:
+            self._ssh = paramiko.SSHClient()
+            self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self._ssh.connect(
+                self.host, self.port, self.username, self.password, timeout=10
+            )
+            with self._channel_lock:
+                self._channel = self._ssh.invoke_shell(width=220, height=50)
+                self._channel.settimeout(0.2)
+            self.connected.emit()
+            while self._is_running:
+                try:
+                    with self._channel_lock:
+                        if self._channel is None or self._channel.closed:
+                            break
+                        data = self._channel.recv(4096)
+                    if data:
+                        self.output_ready.emit(data.decode('utf-8', errors='replace'))
+                    elif not data:
+                        break
+                except socket.timeout:
+                    pass
+                except Exception as exc:
+                    logger.debug(f"SshConsoleWorker recv: {exc}")
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+        finally:
+            self._cleanup()
+            self.disconnected.emit()
+
+    def send_command(self, cmd):
+        with self._channel_lock:
+            if self._channel and not self._channel.closed:
+                self._channel.send(cmd)
+
+    def stop(self):
+        self._is_running = False
+
+    def _cleanup(self):
+        try:
+            with self._channel_lock:
+                if self._channel:
+                    self._channel.close()
+                    self._channel = None
+            if self._ssh:
+                self._ssh.close()
+                self._ssh = None
+        except Exception as exc:
+            logger.debug(f"SshConsoleWorker cleanup: {exc}")
+
+
+class ScpWorker(QThread):
+    """Worker thread for SFTP file upload / download (SCP-like)."""
+    progress = pyqtSignal(str)   # status / progress messages
+    finished = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, host, port, username, password,
+                 direction, local_path, remote_path):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        # direction: 'upload'  → local → remote
+        #            'download' → remote → local
+        self.direction = direction
+        self.local_path = local_path
+        self.remote_path = remote_path
+
+    def run(self):
+        transport = None
+        try:
+            transport = paramiko.Transport((self.host, self.port))
+            transport.connect(username=self.username, password=self.password)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+
+            if self.direction == 'upload':
+                self.progress.emit(
+                    f"[SCP] Uploading  {self.local_path}  →  {self.remote_path} …"
+                )
+                sftp.put(self.local_path, self.remote_path,
+                         callback=self._sftp_callback)
+                sftp.close()
+                self.finished.emit(True, f"[SCP] Upload complete: {self.remote_path}")
+            else:
+                self.progress.emit(
+                    f"[SCP] Downloading  {self.remote_path}  →  {self.local_path} …"
+                )
+                sftp.get(self.remote_path, self.local_path,
+                         callback=self._sftp_callback)
+                sftp.close()
+                self.finished.emit(True, f"[SCP] Download complete: {self.local_path}")
+        except Exception as exc:
+            self.finished.emit(False, f"[SCP] Error: {exc}")
+        finally:
+            if transport:
+                transport.close()
+
+    def _sftp_callback(self, transferred, total):
+        if total > 0:
+            pct = int(transferred * 100 / total)
+            self.progress.emit(f"\r[SCP] {pct}%  ({transferred}/{total} bytes)")
+
+
+class RemoteFileBrowserDialog(QDialog):
+    """
+    A modal dialog that browses the RPI filesystem over SFTP.
+
+    mode='file'  – user must select a remote *file*   (used for Download)
+    mode='dir'   – user selects a remote *directory*  (used for Upload destination)
+
+    After exec_() == QDialog.Accepted  →  self.selected_path holds the chosen path.
+    """
+
+    def __init__(self, host, port, username, password,
+                 mode='file', start_path=None, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.mode = mode          # 'file' or 'dir'
+        self.selected_path = ''
+        self._sftp = None
+        self._transport = None
+        # Use a safe default start path, falling back to root if no username
+        safe_user = username.strip('/') if username else 'home'
+        self._current_path = start_path or f'/home/{safe_user}'
+
+        self.setWindowTitle(
+            "Browse RPI – Select File" if mode == 'file'
+            else "Browse RPI – Select Destination Folder"
+        )
+        self.resize(600, 420)
+        self._build_ui()
+        self._connect_sftp()
+        self._load_dir(self._current_path)
+
+    # ------------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        # ── path bar ──────────────────────────────────────────────────
+        path_row = QHBoxLayout()
+        up_btn = QPushButton("⬆ Up")
+        up_btn.setFixedWidth(60)
+        up_btn.clicked.connect(self._go_up)
+        path_row.addWidget(up_btn)
+
+        self._path_edit = QLineEdit(self._current_path)
+        self._path_edit.returnPressed.connect(self._go_to_typed_path)
+        path_row.addWidget(self._path_edit)
+
+        go_btn = QPushButton("Go")
+        go_btn.setFixedWidth(40)
+        go_btn.clicked.connect(self._go_to_typed_path)
+        path_row.addWidget(go_btn)
+
+        layout.addLayout(path_row)
+
+        # ── status label (shows connection state / errors) ────────────
+        self._status_lbl = QLabel("Connecting…")
+        self._status_lbl.setStyleSheet("color: #888; font-size: 8pt;")
+        layout.addWidget(self._status_lbl)
+
+        # ── file list ─────────────────────────────────────────────────
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(True)
+        self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.itemClicked.connect(self._on_single_click)
+        layout.addWidget(self._list, stretch=1)
+
+        # ── selection label ───────────────────────────────────────────
+        self._sel_lbl = QLabel("Nothing selected")
+        self._sel_lbl.setStyleSheet("color: #555; font-style: italic;")
+        layout.addWidget(self._sel_lbl)
+
+        # ── buttons ───────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+
+        if self.mode == 'dir':
+            self._select_folder_btn = QPushButton("📂  Select This Folder")
+            self._select_folder_btn.setStyleSheet(
+                "background-color: #17a2b8; color: white; padding: 4px 10px;"
+            )
+            self._select_folder_btn.clicked.connect(self._select_current_folder)
+            btn_row.addWidget(self._select_folder_btn)
+
+        btn_row.addStretch()
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._ok_btn = box.button(QDialogButtonBox.Ok)
+        self._ok_btn.setText("Select")
+        self._ok_btn.setEnabled(False)
+        box.accepted.connect(self._on_accept)
+        box.rejected.connect(self.reject)
+        btn_row.addWidget(box)
+        layout.addLayout(btn_row)
+
+    # ------------------------------------------------------------------
+    # SFTP connection
+    # ------------------------------------------------------------------
+    def _connect_sftp(self):
+        try:
+            self._transport = paramiko.Transport((self.host, self.port))
+            self._transport.connect(username=self.username, password=self.password)
+            self._sftp = paramiko.SFTPClient.from_transport(self._transport)
+            self._status_lbl.setText(f"Connected  |  {self.host}")
+        except Exception as exc:
+            self._status_lbl.setText(f"SFTP error: {exc}")
+            self._list.addItem(QListWidgetItem(f"⚠  Cannot connect: {exc}"))
+
+    def closeEvent(self, event):
+        self._close_sftp()
+        super().closeEvent(event)
+
+    def _close_sftp(self):
+        try:
+            if self._sftp:
+                self._sftp.close()
+                self._sftp = None
+        except paramiko.SSHException as exc:
+            logger.debug(f"RemoteFileBrowserDialog SFTP close: {exc}")
+        try:
+            if self._transport:
+                self._transport.close()
+                self._transport = None
+        except paramiko.SSHException as exc:
+            logger.debug(f"RemoteFileBrowserDialog transport close: {exc}")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _remote_join(directory, name):
+        """Join a remote (POSIX) directory path with an entry name."""
+        import posixpath
+        return posixpath.join(directory, name)
+
+    @staticmethod
+    def _remote_parent(path):
+        """Return the parent directory of a remote (POSIX) path."""
+        import posixpath
+        parent = posixpath.dirname(path.rstrip('/'))
+        return parent or '/'
+
+    # ------------------------------------------------------------------
+    # Directory loading
+    # ------------------------------------------------------------------
+    def _load_dir(self, path):
+        if not self._sftp:
+            return
+        try:
+            entries = self._sftp.listdir_attr(path)
+        except Exception as exc:
+            self._status_lbl.setText(f"Cannot list {path}: {exc}")
+            return
+
+        self._current_path = path
+        self._path_edit.setText(path)
+        self._list.clear()
+        self._sel_lbl.setText("Nothing selected")
+        self._ok_btn.setEnabled(False)
+
+        # Sort: folders first, then files, both alphabetically
+        dirs = sorted(
+            [e for e in entries if stat.S_ISDIR(e.st_mode)],
+            key=lambda e: e.filename.lower()
+        )
+        files = sorted(
+            [e for e in entries if not stat.S_ISDIR(e.st_mode)],
+            key=lambda e: e.filename.lower()
+        )
+
+        for entry in dirs:
+            item = QListWidgetItem(f"📁  {entry.filename}")
+            item.setData(Qt.UserRole,
+                         ('dir', self._remote_join(path, entry.filename)))
+            self._list.addItem(item)
+
+        for entry in files:
+            item = QListWidgetItem(f"📄  {entry.filename}")
+            item.setData(Qt.UserRole,
+                         ('file', self._remote_join(path, entry.filename)))
+            self._list.addItem(item)
+
+        self._status_lbl.setText(
+            f"{path}  –  {len(dirs)} folder(s), {len(files)} file(s)"
+        )
+
+        # In 'dir' mode the current folder is always a valid selection
+        if self.mode == 'dir':
+            self._ok_btn.setEnabled(True)
+            self._sel_lbl.setText(f"Destination: {path}")
+            self.selected_path = path
+
+    # ------------------------------------------------------------------
+    # Navigation slots
+    # ------------------------------------------------------------------
+    def _go_up(self):
+        self._load_dir(self._remote_parent(self._current_path))
+
+    def _go_to_typed_path(self):
+        path = self._path_edit.text().strip()
+        if path:
+            self._load_dir(path)
+
+    def _on_double_click(self, item):
+        kind, path = item.data(Qt.UserRole)
+        if kind == 'dir':
+            self._load_dir(path)
+
+    def _on_single_click(self, item):
+        kind, path = item.data(Qt.UserRole)
+        if self.mode == 'file':
+            if kind == 'file':
+                self.selected_path = path
+                self._sel_lbl.setText(f"Selected: {path}")
+                self._ok_btn.setEnabled(True)
+            else:
+                self._ok_btn.setEnabled(False)
+                self._sel_lbl.setText("Double-click a folder to navigate into it")
+        else:  # dir mode – single-click on a subfolder selects it
+            if kind == 'dir':
+                self.selected_path = path
+                self._sel_lbl.setText(f"Destination: {path}")
+                self._ok_btn.setEnabled(True)
+
+    def _select_current_folder(self):
+        """'Select This Folder' button – confirm the current directory."""
+        self.selected_path = self._current_path
+        self._close_sftp()
+        self.accept()
+
+    # ------------------------------------------------------------------
+    # Accept / reject
+    # ------------------------------------------------------------------
+    def _on_accept(self):
+        if self.selected_path:
+            self._close_sftp()
+            self.accept()
+
+
+class TerminalWidget(QPlainTextEdit):
+    """
+    A terminal-emulator widget that behaves like PuTTY / MobaXterm:
+    - Every keystroke is forwarded immediately to the SSH channel.
+    - Arrow keys, Ctrl+C/D/Z, Tab, Backspace, F-keys all work.
+    - Received text is displayed with basic control-character handling
+      (\r overwrite mode, \n newline, backspace echo).
+    - Right-click → "Paste to terminal" to send clipboard text.
+    """
+
+    # Maps Qt key codes to ANSI/VT100 escape sequences
+    _KEY_MAP = {
+        Qt.Key_Up:       '\x1b[A',
+        Qt.Key_Down:     '\x1b[B',
+        Qt.Key_Right:    '\x1b[C',
+        Qt.Key_Left:     '\x1b[D',
+        Qt.Key_Home:     '\x1b[H',
+        Qt.Key_End:      '\x1b[F',
+        Qt.Key_Delete:   '\x1b[3~',
+        Qt.Key_PageUp:   '\x1b[5~',
+        Qt.Key_PageDown: '\x1b[6~',
+        Qt.Key_F1:       '\x1bOP',
+        Qt.Key_F2:       '\x1bOQ',
+        Qt.Key_F3:       '\x1bOR',
+        Qt.Key_F4:       '\x1bOS',
+        Qt.Key_F5:       '\x1b[15~',
+        Qt.Key_F6:       '\x1b[17~',
+        Qt.Key_F7:       '\x1b[18~',
+        Qt.Key_F8:       '\x1b[19~',
+        Qt.Key_F9:       '\x1b[20~',
+        Qt.Key_F10:      '\x1b[21~',
+        Qt.Key_F11:      '\x1b[23~',
+        Qt.Key_F12:      '\x1b[24~',
+    }
+
+    # Strip ANSI colour/style/cursor-movement escape sequences from output
+    _ANSI_STRIP = re.compile(
+        r'\x1b(?:'
+        r'[@-Z\\-_]'            # two-byte ESC sequences
+        r'|\[[0-?]*[ -/]*[@-~]' # CSI sequences  e.g. \x1b[1;32m
+        r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'  # OSC sequences
+        r'|[\(\)][A-Z0-9=]'     # character-set designators
+        r')'
+    )
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self._send_fn = None
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setStyleSheet("""
+            QPlainTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: 'Courier New', monospace;
+                font-size: 11pt;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+
+    def set_send_fn(self, fn):
+        """Set (or clear) the function used to send keystrokes to the SSH channel."""
+        self._send_fn = fn
+
+    # ------------------------------------------------------------------
+    # Keyboard handling
+    # ------------------------------------------------------------------
+    def keyPressEvent(self, event):
+        if self._send_fn is None:
+            # Not connected – only allow scrolling shortcuts
+            super().keyPressEvent(event)
+            return
+
+        key = event.key()
+        mods = event.modifiers()
+        text = event.text()
+
+        # --- Ctrl+<letter> ---
+        if mods & Qt.ControlModifier and not (mods & Qt.ShiftModifier):
+            ctrl_map = {
+                Qt.Key_C: '\x03',  # interrupt
+                Qt.Key_D: '\x04',  # EOF
+                Qt.Key_Z: '\x1a',  # suspend
+                Qt.Key_L: '\x0c',  # clear screen
+                Qt.Key_A: '\x01',  # beginning of line
+                Qt.Key_E: '\x05',  # end of line
+                Qt.Key_U: '\x15',  # kill to start of line
+                Qt.Key_K: '\x0b',  # kill to end of line (VT / readline ^K)
+                Qt.Key_W: '\x17',  # delete word back
+                Qt.Key_R: '\x12',  # reverse history search
+            }
+            if key in ctrl_map:
+                self._send_fn(ctrl_map[key])
+                return
+            # Ctrl+C with selection → copy to clipboard (allow default)
+            if key == Qt.Key_C and self.textCursor().hasSelection():
+                super().keyPressEvent(event)
+                return
+            return  # absorb other Ctrl combos
+
+        # --- Special / navigation keys ---
+        if key in self._KEY_MAP:
+            self._send_fn(self._KEY_MAP[key])
+            return
+
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self._send_fn('\r')
+            return
+
+        if key == Qt.Key_Backspace:
+            self._send_fn('\x7f')
+            return
+
+        if key == Qt.Key_Tab:
+            self._send_fn('\t')
+            return
+
+        if key == Qt.Key_Escape:
+            self._send_fn('\x1b')
+            return
+
+        # --- Printable character ---
+        if text:
+            self._send_fn(text)
+            return
+
+        # --- Modifier-only keys (Shift, Alt, …) – let Qt handle (no text change) ---
+        super().keyPressEvent(event)
+
+    # ------------------------------------------------------------------
+    # Output display
+    # ------------------------------------------------------------------
+    def write(self, text):
+        """
+        Process and display text received from the SSH channel.
+        Handles carriage return (overwrite current line), newline, backspace echo,
+        and strips ANSI escape sequences.
+        """
+        text = self._ANSI_STRIP.sub('', text)
+
+        doc = self.document()
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.End)
+
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == '\r':
+                cur.movePosition(QTextCursor.StartOfBlock)
+            elif ch == '\n':
+                cur.movePosition(QTextCursor.End)
+                cur.insertText('\n')
+            elif ch in ('\x08', '\x7f'):
+                # Backspace / DEL echo from remote
+                if not cur.atBlockStart():
+                    cur.deletePreviousChar()
+            elif ch == '\x07':
+                pass  # bell – ignore
+            elif ord(ch) >= 32 or ch == '\t':
+                # Overwrite mode: replace character under cursor if not at line end
+                if not cur.atBlockEnd():
+                    cur.deleteChar()
+                cur.insertText(ch)
+            i += 1
+
+        self.setTextCursor(cur)
+        sb = self.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    # ------------------------------------------------------------------
+    # Context menu: paste to terminal
+    # ------------------------------------------------------------------
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
+        paste_action = menu.addAction("Paste to terminal")
+        paste_action.setEnabled(self._send_fn is not None)
+        paste_action.triggered.connect(self._paste_to_terminal)
+        menu.exec_(event.globalPos())
+
+    def _paste_to_terminal(self):
+        text = QApplication.clipboard().text()
+        if text and self._send_fn:
+            self._send_fn(text)
 
 
 class TestStationInterface(QMainWindow):
@@ -1472,9 +2112,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to console"""
         if hasattr(self, 'console_output') and self.console_output is not None:
             if is_error:
-                self.console_output.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.console_output.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.console_output.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+                self.console_output.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
             # Auto-scroll to bottom
             self.console_output.verticalScrollBar().setValue(
                 self.console_output.verticalScrollBar().maximum()
@@ -1495,17 +2135,8 @@ class TestStationInterface(QMainWindow):
             self.vna_t = time.time()
             # Reset UI state
             self.VNAtest_console.clear()
-            self.VNA_status_label_start.setText("Test: Running...")
-            self.VNA_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.VNA_status_label_start.setText("● Running…")
+            self.VNA_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.start_vna_progress()
             self.VNA_start_button.setEnabled(False)
 
@@ -1536,18 +2167,18 @@ class TestStationInterface(QMainWindow):
                 self.worker.stop()
                 self.VNA_start_button.setEnabled(True)
 
+            if "mailbox error" in line.lower():
+                self.append_vna_message(
+                    "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                    is_error=True
+                )
+                self.worker.stop()
+                self.VNA_start_button.setEnabled(True)
+                return
+
             if "Calibration PASS" in line:
-                self.VNA_status_label_start.setText("Test: Passed")
-                self.VNA_status_label_start.setStyleSheet("""
-                          QLabel {
-                              background-color: #28a745;
-                              color: white;
-                              padding: 2px 5px;
-                              border-radius: 3px;
-                              font-weight: bold;
-                              font-size: 9pt;
-                          }
-                      """)
+                self.VNA_status_label_start.setText('● Completed — PASS')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_PASS_SS)
                 self.append_vna_message("\n=== VNA Calibration PASSED ===")
                 self.vna_timer.stop()
                 self.worker.stop()
@@ -1555,17 +2186,8 @@ class TestStationInterface(QMainWindow):
                 # self.work_timeout = 30
 
             elif "Calibration FAIL" in line :
-                self.VNA_status_label_start.setText("Test: Failed")
-                self.VNA_status_label_start.setStyleSheet("""
-                          QLabel {
-                              background-color: #dc3545;
-                              color: white;
-                              padding: 2px 5px;
-                              border-radius: 3px;
-                              font-weight: bold;
-                              font-size: 9pt;
-                          }
-                      """)
+                self.VNA_status_label_start.setText('● Completed — FAIL')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_vna_message("\n!!! VNA Calibration FAILED !!!", is_error=True)
 
                 self.vna_timer.stop()
@@ -1573,17 +2195,8 @@ class TestStationInterface(QMainWindow):
                 self.VNA_start_button.setEnabled(True)
                 # self.work_timeout = 30
             elif "ERROR: Connect ECal module" in line :
-                self.VNA_status_label_start.setText("Test: Failed")
-                self.VNA_status_label_start.setStyleSheet("""
-                                          QLabel {
-                                              background-color: #dc3545;
-                                              color: white;
-                                              padding: 2px 5px;
-                                              border-radius: 3px;
-                                              font-weight: bold;
-                                              font-size: 9pt;
-                                          }
-                                      """)
+                self.VNA_status_label_start.setText('● Completed — FAIL')
+                self.VNA_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_vna_message("\n!!! VNA Calibration FAILED : Please connect Ecal Module... !!!", is_error=True)
                 self.vna_timer.stop()
                 self.worker.stop()
@@ -1602,17 +2215,8 @@ class TestStationInterface(QMainWindow):
 
         # If test didn't explicitly pass or fail, mark it as incomplete
         if "Passed" not in self.VNA_status_label_start.text() and "Failed" not in self.VNA_status_label_start.text():
-            self.VNA_status_label_start.setText("Test: Incomplete")
-            self.VNA_status_label_start.setStyleSheet("""
-                  QLabel {
-                      background-color: #6c757d;
-                      color: white;
-                      padding: 2px 5px;
-                      border-radius: 3px;
-                      font-weight: bold;
-                      font-size: 9pt;
-                  }
-              """)
+            self.VNA_status_label_start.setText('● Incomplete')
+            self.VNA_status_label_start.setStyleSheet(self._PILL_GRAY_SS)
             self.append_vna_message("\n!!! Test did not complete properly !!!", is_error=True)
         # self.work_timeout = 30
 
@@ -1713,6 +2317,13 @@ class TestStationInterface(QMainWindow):
         self.execute_command("programotp", self.handle_otp_test_output, 0)
 
     def handle_otp_test_output(self,stdout, stderr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return
+
         test_passed = "UPDATE_PASS" in stdout
         test_details = stdout.strip()
 
@@ -1955,7 +2566,7 @@ class TestStationInterface(QMainWindow):
                 'firmware_version': self.firmware_version.text().strip()
             }
             self.excel_logger.log_unit_setup(unit_data)
-            self.excel_logger.update_overall_result(self.test_result, PN=self.PN, SN=self.SN)
+            self.excel_logger.update_overall_result(self.test_result, PN=self.PN, SN=self.SN, finalize=False)
 
         except Exception as e:
             # self.logger.error(f"Error in auto_load_connect: {str(e)}",exc_info=True,extra={'func_name': 'auto_load_connect'} )
@@ -1973,17 +2584,8 @@ class TestStationInterface(QMainWindow):
 
             # Reset UI state
             self.dimmtest_console.clear()
-            self.DIMM_status_label_start.setText("Test: Running...")
-            self.DIMM_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.DIMM_status_label_start.setText('● Running…')
+            self.DIMM_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.start_dimm_progress()
             self.dimm_start_button.setEnabled(False)
 
@@ -2012,18 +2614,20 @@ class TestStationInterface(QMainWindow):
                 self.dimm_timer.stop()
                 self.worker.stop()
                 self.dimm_start_button.setEnabled(True)
+
+            if "mailbox error" in line.lower():
+                self.append_dimm_message(
+                    "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                    is_error=True
+                )
+                self.dimm_timer.stop()
+                self.worker.stop()
+                self.dimm_start_button.setEnabled(True)
+                return
+
             if "Calibration Pass" in line:
-                self.DIMM_status_label_start.setText("Test: Passed")
-                self.DIMM_status_label_start.setStyleSheet("""
-                        QLabel {
-                            background-color: #28a745;
-                            color: white;
-                            padding: 2px 5px;
-                            border-radius: 3px;
-                            font-weight: bold;
-                            font-size: 9pt;
-                        }
-                    """)
+                self.DIMM_status_label_start.setText('● Completed — PASS')
+                self.DIMM_status_label_start.setStyleSheet(self._PILL_PASS_SS)
                 self.append_dimm_message("\n=== DIMM Calibration PASSED ===")
 
                 # Log to Excel
@@ -2040,17 +2644,8 @@ class TestStationInterface(QMainWindow):
                 self.dimm_start_button.setEnabled(True)
 
             elif "Calibration Fail" in line:
-                self.DIMM_status_label_start.setText("Test: Failed")
-                self.DIMM_status_label_start.setStyleSheet("""
-                        QLabel {
-                            background-color: #dc3545;
-                            color: white;
-                            padding: 2px 5px;
-                            border-radius: 3px;
-                            font-weight: bold;
-                            font-size: 9pt;
-                        }
-                    """)
+                self.DIMM_status_label_start.setText('● Completed — FAIL')
+                self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
                 self.append_dimm_message("\n!!! DIMM Calibration FAILED !!!", is_error=True)
 
                 # Log to Excel
@@ -2080,17 +2675,8 @@ class TestStationInterface(QMainWindow):
 
         # If test didn't explicitly pass or fail, mark it as incomplete
         if "Passed" not in self.DIMM_status_label_start.text() and "Failed" not in self.DIMM_status_label_start.text():
-            self.DIMM_status_label_start.setText("Test: Incomplete")
-            self.DIMM_status_label_start.setStyleSheet("""
-                QLabel {
-                    background-color: #6c757d;
-                    color: white;
-                    padding: 2px 5px;
-                    border-radius: 3px;
-                    font-weight: bold;
-                    font-size: 9pt;
-                }
-            """)
+            self.DIMM_status_label_start.setText('● Incomplete')
+            self.DIMM_status_label_start.setStyleSheet(self._PILL_GRAY_SS)
             self.append_dimm_message("\n!!! Test did not complete properly !!!", is_error=True)
 
 
@@ -2098,17 +2684,8 @@ class TestStationInterface(QMainWindow):
         self.dimm_timer.stop()
         self.cleanup_resources()
         self.append_dimm_message(f"\n!!! ERROR: {error_msg} !!!", is_error=True)
-        self.DIMM_status_label_start.setText("Test: Error")
-        self.DIMM_status_label_start.setStyleSheet("""
-            QLabel {
-                background-color: #dc3545;
-                color: white;
-                padding: 2px 5px;
-                border-radius: 3px;
-                font-weight: bold;
-                font-size: 9pt;
-            }
-        """)
+        self.DIMM_status_label_start.setText('● Error')
+        self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
         self.dimm_start_button.setEnabled(True)
 
         # Log to Excel
@@ -2125,9 +2702,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to DIMM console"""
         if hasattr(self, 'dimmtest_console') and self.dimmtest_console is not None:
             if is_error:
-                self.dimmtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.dimmtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.dimmtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+                self.dimmtest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
             # Auto-scroll to bottom
             self.dimmtest_console.verticalScrollBar().setValue(
@@ -2138,9 +2715,9 @@ class TestStationInterface(QMainWindow):
         """Helper method to append colored messages to DIMM console"""
         if hasattr(self, 'VNAtest_console') and self.VNAtest_console is not None:
             if is_error:
-                self.VNAtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+                self.VNAtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
             else:
-                self.VNAtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+                self.VNAtest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
             # Auto-scroll to bottom
             self.VNAtest_console.verticalScrollBar().setValue(
@@ -2148,47 +2725,82 @@ class TestStationInterface(QMainWindow):
             )
 
     def append_BNC_message(self, message, is_error=False):
-        """Helper method to append colored messages to DIMM console"""
-        if hasattr(self, 'BNCtest_console') and self.BNCtest_console is not None:
-            if is_error:
-                self.BNCtest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
-            else:
-                self.BNCtest_console.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+        """Append a colour-coded HTML message to the BNC test console.
 
-            # Auto-scroll to bottom
+        Args:
+            message (str): The text to display.
+            is_error (bool): When True the text is rendered in red; otherwise green.
+        """
+        if hasattr(self, 'BNCtest_console') and self.BNCtest_console is not None:
+            # Vibrant colours chosen for the dark terminal background
+            colour = "#f85149" if is_error else "#3fb950"
+            self.BNCtest_console.append(
+                f'<span style="color:{colour}; font-weight:bold;">{message}</span>'
+            )
+            # Auto-scroll to the latest output
             self.BNCtest_console.verticalScrollBar().setValue(
                 self.BNCtest_console.verticalScrollBar().maximum()
             )
 
     def BNC_test(self):
+        """Start the BNC Port Verification test sequence.
+
+        Resets state from any previous run, clears the console, and presents
+        the first zone-connection prompt (Zone 2) to the operator.
+        """
         try:
             if self.bnc_t >= 1:
-                excel_logger.reset_sheet("BNC Port Verification")
+                self.excel_logger.reset_sheet("BNC Port Verification")
             self.bnc_t += 1
-            self.overall_result = 'PASS'
-            # self.start_time1 = time.time()
+            # Do NOT reset over_all_result here — failures from prior test
+            # sections (resistance, impedance, etc.) must persist in the
+            # overall result so the final filename reflects them.
 
+            # Stop any previously running worker
             if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
 
-            # Reset UI state
+            # Reset zone indicator labels to "pending" state
+            if hasattr(self, 'BNC_zone_labels'):
+                for znum, lbl in self.BNC_zone_labels.items():
+                    subtitle = self._BNC_ZONE_SUBTITLES.get(znum, "")
+                    lbl.setText(f"⏳  Zone {znum}\n{subtitle}")
+                    lbl.setStyleSheet("""
+                        QLabel {
+                            background-color: #fff3cd;
+                            color: #856404;
+                            border: 2px solid #ffc107;
+                            border-radius: 6px;
+                            font-size: 9pt;
+                            font-weight: bold;
+                            padding: 4px 6px;
+                        }
+                    """)
+
+            # Reset progress bar
+            if hasattr(self, 'bnc_progress_bar'):
+                self.bnc_progress_bar.setValue(0)
+
+            # Reset UI to "running" state
             self.BNCtest_console.clear()
-            self.BNC_status_label_start.setText("Test: Running...")
+            self.BNC_status_label_start.setText("● Running…")
             self.BNC_status_label_start.setStyleSheet("""
-            QLabel {
-                    background-color: #ffc107;
-                    color: black;
-                    padding: 2px 5px;
-                    border-radius: 3px;
+                QLabel {
+                    background-color: #fd7e14;
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 14px;
                     font-weight: bold;
-                    font-size: 9pt;
-            }"""
-                                                      )
+                    font-size: 10pt;
+                }
+            """)
             self.BNC_start_button.setEnabled(False)
 
-            self.append_BNC_message("\n================== BNC Test Started =======================\n")
+            self.append_BNC_message(
+                "\n================== BNC Test Started =======================\n"
+            )
 
-            # Show first prompt for Zone 1
+            # Kick off with the first zone prompt
             self.show_zone_prompt(2)
 
         except Exception as e:
@@ -2196,7 +2808,11 @@ class TestStationInterface(QMainWindow):
             self.cleanup_resources()
 
     def show_zone_prompt(self, zone_number):
+        """Prompt the operator to connect a zone, then launch the remote test worker.
 
+        Args:
+            zone_number (int): The zone number to display in the prompt dialog.
+        """
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
         msg.setText(f"Please connect Zone {zone_number} and click OK to continue")
@@ -2210,285 +2826,288 @@ class TestStationInterface(QMainWindow):
             self.start_time1 = time.time()
             self.append_BNC_message(f"\nTesting Zone {zone_number}...\n")
 
-            # Start the worker with the main script
+            # Start a new worker for the remote BNC test script
             self.worker = Worker(
                 self.ssh_handler,
-                '/home/robot/Manufacturing_test/aipc_beta/BNC.py',  # Your original script
+                '/home/robot/Manufacturing_test/aipc_beta/BNC.py',
                 command
             )
-            # Connect the output handler
             self.worker.output_ready.connect(self.handle_BNC_output)
             self.worker.error_occurred.connect(self.handle_BNC_error)
             self.worker.start()
         else:
             self.append_BNC_message("Test cancelled by user", is_error=True)
-            self.BNC_status_label_start.setText("Cancelled")
             self.BNC_start_button.setEnabled(True)
-            self.BNC_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+            self.BNC_status_label_start.setText("● Cancelled")
+            self.BNC_status_label_start.setStyleSheet("""
+                QLabel {
+                    background-color: #dc3545;
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 14px;
+                    font-weight: bold;
+                    font-size: 10pt;
+                }
+            """)
+
+    # ------------------------------------------------------------------ #
+    # BNC zone result helpers                                              #
+    # ------------------------------------------------------------------ #
+
+    # Maps the zone number to its human-readable subtitle used in the UI pill
+    _BNC_ZONE_SUBTITLES = {
+        2: "Mid-Inner",
+        3: "Mid-Edge",
+        4: "Edge",
+        5: "Outer",
+    }
+
+    def _update_bnc_zone_label(self, zone_num, passed):
+        """Update the visual indicator for a completed BNC zone.
+
+        Args:
+            zone_num (int): Zone number (2–5).
+            passed (bool): Whether the zone measurement passed.
+        """
+        if not hasattr(self, 'BNC_zone_labels'):
+            return
+        lbl = self.BNC_zone_labels.get(zone_num)
+        if lbl is None:
+            return
+        subtitle = self._BNC_ZONE_SUBTITLES.get(zone_num, "")
+        if passed:
+            icon = "✅"
+            style = """
+                QLabel {
+                    background-color: #d4edda;
+                    color: #155724;
+                    border: 2px solid #28a745;
+                    border-radius: 6px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                    padding: 4px 6px;
+                }
+            """
+        else:
+            icon = "❌"
+            style = """
+                QLabel {
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    border: 2px solid #dc3545;
+                    border-radius: 6px;
+                    font-size: 9pt;
+                    font-weight: bold;
+                    padding: 4px 6px;
+                }
+            """
+        lbl.setText(f"{icon}  Zone {zone_num}\n{subtitle}")
+        lbl.setStyleSheet(style)
+
+        # Advance the progress bar
+        if hasattr(self, 'bnc_progress_bar'):
+            current = self.bnc_progress_bar.value()
+            self.bnc_progress_bar.setValue(current + 1)
+
+    def _handle_bnc_zone_result(self, zone_label, testpoint_label, line, next_zone_number=None):
+        """Parse a CSV result line for a BNC zone and log the outcome.
+
+        Expected line format: ``<zone_name>,<value_dB>,<PASS|FAIL>``
+
+        After logging, the worker for the current zone is stopped.  If
+        *next_zone_number* is given the operator is prompted to connect that
+        zone; otherwise the full test sequence is marked as complete.
+
+        Args:
+            zone_label (str): Zone identifier expected in the output line
+                (e.g. ``"Zone2-Mid_Inner"``).
+            testpoint_label (str): Short label used in the summary log
+                (e.g. ``"Zone2"``).
+            line (str): Raw output line received from the remote script.
+            next_zone_number (int or None): Zone number to prompt next, or
+                ``None`` when this is the final zone.
+        """
+        parts = line.split(",")
+        if len(parts) < 3:
+            self.append_BNC_message(
+                f"Invalid data format for {zone_label}: {line}", is_error=True
+            )
+            return
+
+        test_name = parts[0]
+        value = parts[1]
+        passed = parts[2].strip().upper() == "PASS"
+
+        # Extract zone number from testpoint_label (e.g. "Zone2" → 2)
+        try:
+            zone_num = int(testpoint_label.replace("Zone", ""))
+        except ValueError:
+            zone_num = None
+
+        if passed:
+            self.append_BNC_message(f"\nBNC Test {zone_label} PASS\n")
+        else:
+            self.append_BNC_message(f"\nBNC Test {zone_label} FAIL\n", is_error=True)
+            self.over_all_result = 'FAIL'
+
+        # Update the visual zone indicator
+        if zone_num is not None:
+            self._update_bnc_zone_label(zone_num, passed)
+
+        self.excel_logger.log_BNC_measurement(
+            test_zone=test_name,
+            test_details=value,
+            test_passed=passed,
+        )
+
+        self.step_no += 1
+        self.excel_logger.log_summary(
+            step_data={
+                'step': str(self.step_no),
+                'unit': 'dB',
+                'low_limit': '-1',
+                'measure': value,
+                'high_limit': '0',
+                'teststep': 'Verify BNC port',
+                'testpoints': testpoint_label,
+                'status': "PASS" if passed else "FAIL",
+            }
+        )
+
+        self.worker.stop()
+
+        if next_zone_number is not None:
+            # Advance to the next zone
+            self.show_zone_prompt(next_zone_number)
+        else:
+            # All zones complete – finalise the test run
+            self.excel_logger.log_summary(
+                metadata={
+                    'end_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'overall_result': self.over_all_result,
+                }
+            )
+            self.excel_logger.update_overall_result(self.over_all_result)
+            self.append_BNC_message("\nBNC Test completed successfully\n")
+
+            # Update status pill to Completed / Failed depending on overall
+            if self.over_all_result == 'PASS':
+                status_text = "● Completed — PASS"
+                status_style = """
+                    QLabel {
+                        background-color: #28a745;
+                        color: white;
+                        padding: 6px 14px;
+                        border-radius: 14px;
+                        font-weight: bold;
+                        font-size: 10pt;
+                    }
+                """
+            else:
+                status_text = "● Completed — FAIL"
+                status_style = """
+                    QLabel {
+                        background-color: #dc3545;
+                        color: white;
+                        padding: 6px 14px;
+                        border-radius: 14px;
+                        font-weight: bold;
+                        font-size: 10pt;
+                    }
+                """
+            self.BNC_status_label_start.setText(status_text)
+            self.BNC_status_label_start.setStyleSheet(status_style)
+            self.BNC_start_button.setEnabled(True)
 
     def handle_BNC_output(self, line):
-        # Your original output handling - completely unchanged
+        """Handle a single line of output from the remote BNC test script.
+
+        Infrastructure errors (EtherCAT slave init failure, PyVISA errors) are
+        shown as blocking modal dialogs and abort the worker immediately.
+
+        Recognised zone-result lines are dispatched to
+        :meth:`_handle_bnc_zone_result`, which parses the CSV payload, logs
+        the result, and advances to the next zone prompt.
+
+        A 90-second watchdog is also checked on every line; if no useful data
+        has arrived within that window the worker is stopped with a warning.
+
+        Args:
+            line (str): A single line of text received from the remote process.
+        """
+        # --- Infrastructure error checks ------------------------------------
         if "Error in slave initialization" in line:
             QMessageBox.critical(
                 self,
                 "Critical Error",
-                "Slave initialization failed! Please check the EtherCAT connection and restart the test."
+                "Slave initialization failed!\n"
+                "Please check the EtherCAT connection and restart the test.",
             )
             self.worker.stop()
+            return
 
         if "pyvisa.errors" in line:
             QMessageBox.critical(
                 self,
                 "PyVISA Error",
-                f"A PyVISA error occurred: {line.strip()}"
+                f"A PyVISA error occurred:\n{line.strip()}",
             )
             self.worker.stop()
             return
-        """
-        if "Zone1-Inner" in line:
-            Val = line.split(",")
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
 
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone1-Inner PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone1-Inner Fail\n", is_error=True)
-                val = False
-
-                self.overall_result = 'FAIL'
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
+        if "mailbox error" in line.lower():
+            self.append_BNC_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
             )
-            self.step_no = self.step_no + 1
-            # Log metadata along with test data
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone1',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            # After Zone1 is done, prompt for Zone2
-
             self.worker.stop()
-            time.sleep(2)
-            self.show_zone_prompt(2)
-            # self.handle_test_failure()
-        """
+            return
 
+        # --- Zone result dispatch -------------------------------------------
         if "Zone2-Mid_Inner" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone2-Mid_Inner: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-            print(Val)
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message("BNC Test Zone2-Mid_Inner PASS")
-                val = True
-
-            else:
-                self.append_BNC_message(f"BNC Test Zone2-Mid_Inner Fail", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no = self.step_no + 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone2',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            # After Zone2 is done, prompt for Zone3
-            self.worker.stop()
-            self.show_zone_prompt(3)
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone2-Mid_Inner", "Zone2", line, next_zone_number=3)
 
         elif "Zone3-Mid_Edge" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone3-Mid_Edge: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone3-Mid_Edge PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone3-Mid_Edge Fail\n", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no= self.step_no+ 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone3',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.worker.stop()
-            self.show_zone_prompt(4)
-
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone3-Mid_Edge", "Zone3", line, next_zone_number=4)
 
         elif "Zone4-Edge" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone4-Edge: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
-
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone4-Edge PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone4-Edge Fail\n", is_error=True)
-                val = False
-                self.overall_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-            self.step_no = self.step_no + 1
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone4',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.worker.stop()
-            self.show_zone_prompt(5)
-
-            # self.handle_test_failure()
+            self._handle_bnc_zone_result("Zone4-Edge", "Zone4", line, next_zone_number=5)
 
         elif "Zone5-Outer" in line:
-            Val = line.split(",")
-            if len(Val) < 3:
-                self.append_BNC_message(f"Invalid data format for Zone5-Outer: {line}", is_error=True)
-                return
-            Testname = Val[0]
-            Value = Val[1]
-            Result = Val[2]
+            self._handle_bnc_zone_result("Zone5-Outer", "Zone5", line, next_zone_number=None)
 
-            if Result.upper() == "PASS":
-                self.append_BNC_message(f"\nBNC Test Zone5-Outer PASS\n")
-                val = True
-
-            else:
-                self.append_BNC_message(f"\nBNC Test Zone5-Outer Fail\n", is_error=True)
-                val = False
-
-                self.overall_result = 'FAIL'
-                self.over_all_result = 'FAIL'
-
-
-            self.excel_logger.log_BNC_measurement(
-                test_zone=Testname,
-                test_details=Value,
-                test_passed=val
-            )
-
-            self.step_no = self.step_no + 1
-
-            self.excel_logger.log_summary(
-                step_data={
-                    'step': str(self.step_no),
-                    'unit': 'dB',
-                    'low_limit': '-1',
-                    'measure': Value,
-                    'high_limit': '0',
-                    'teststep': 'Verify BNC port',
-                    'testpoints': 'Zone5',
-                    'status': "PASS" if val else "FAIL"
-                }
-            )
-
-            self.excel_logger.log_summary(
-                metadata={
-                    'end_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    'overall_result': self.over_all_result
-                }
-            )
-
-            self.excel_logger.update_overall_result(self.over_all_result)
-
-
-
-            self.append_BNC_message(f"BNC Test completed successfully")
-            self.worker.stop()
-            self.BNC_status_label_start.setText("Completed")
-            self.BNC_start_button.setEnabled(True)
-            self.BNC_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
-
+        # --- Watchdog: abort if no data received within 90 seconds ----------
         if time.time() - self.start_time1 > 90:
             self.append_BNC_message(
-                f"===No Data from Raspberry pi for more than 90 sec please check the Raspberry pi =====", is_error=True)
+                "=== No data from Raspberry Pi for more than 90 s. "
+                "Please check the Raspberry Pi. ===",
+                is_error=True,
+            )
             self.worker.stop()
 
     def handle_BNC_error(self, error_msg):
+        """Handle an error signal emitted by the BNC test worker.
+
+        Displays the error in the console, re-enables the Start button, and
+        cleans up any active resources.
+
+        Args:
+            error_msg (str): The error message reported by the worker.
+        """
         self.append_BNC_message(f"ERROR: {error_msg}", is_error=True)
         self.BNC_start_button.setEnabled(True)
         self.cleanup_resources()
-        self.BNC_status_label_start.setText("Failed")
-        self.BNC_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+        self.BNC_status_label_start.setText("● Failed")
+        self.BNC_status_label_start.setStyleSheet("""
+            QLabel {
+                background-color: #dc3545;
+                color: white;
+                padding: 6px 14px;
+                border-radius: 14px;
+                font-weight: bold;
+                font-size: 10pt;
+            }
+        """)
 
 
     @log_function
@@ -2526,6 +3145,13 @@ class TestStationInterface(QMainWindow):
 
     def handle_otpcheck_output(self, stdout, stderr):
         self.handling_flag = 1
+
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
 
         if "No such file or directory" in stderr:
             error_msg = "ERROR: No OTP file found on device\n"
@@ -2584,6 +3210,13 @@ class TestStationInterface(QMainWindow):
             return True
 
     def handle_firmare_check_output(self, stdout, sterr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (sterr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return
+
         parsed_data = self.parse_ssh_output(stdout)
         Actual_version = parsed_data['firmware_version']
         Expected_version = self.config["expected_firmware_version"]
@@ -2602,6 +3235,13 @@ class TestStationInterface(QMainWindow):
             self.test_result = 'FAIL'
 
     def handle_self_test_output(self, stdout, sterr):
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (sterr or "").lower():
+            self.append_self_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         test_passed = "Self Test PASS" in stdout
         test_details = stdout.strip()
 
@@ -2616,13 +3256,13 @@ class TestStationInterface(QMainWindow):
 
         if test_passed:
             self.append_self_message("SELF TEST PASS")
-            self.test_status_label_start.setText("Passed")
-            self.test_status_label_start.setStyleSheet("background-color: #28a745; color: white;")
+            self.test_status_label_start.setText("● Completed — PASS")
+            self.test_status_label_start.setStyleSheet(self._PILL_PASS_SS)
         else:
             self.append_self_message("SELF TEST FAIL", is_error=True)
             self.over_all_result = "FAIL"
-            self.test_status_label_start.setText("Failed")
-            self.test_status_label_start.setStyleSheet("background-color: #dc3545; color: white;")
+            self.test_status_label_start.setText("● Completed — FAIL")
+            self.test_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
 
         # Log to Excel
         #unit_identifier = f"{self.assembly_pn_input.text().strip()} ({self.assembly_sn_input.text().strip()})"
@@ -2663,6 +3303,13 @@ class TestStationInterface(QMainWindow):
     def handle_soemcompile_output(self, stdout, stderr):
         self.handling_flag = 2
 
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         # Analyze the output
         analysis = self.check_output_for_strings(stdout)
 
@@ -2693,6 +3340,14 @@ class TestStationInterface(QMainWindow):
 
     def handle_slaveinfo_output(self, stdout, stderr):
         Counter = 0
+
+        if "mailbox error" in (stdout or "").lower() or "mailbox error" in (stderr or "").lower():
+            self.append_console_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            return False
+
         if not self.check:
             return False
 
@@ -2759,20 +3414,18 @@ class TestStationInterface(QMainWindow):
     def _create_Impedance_zone_panel(self, zone_name):
         """Create a responsive impedance zone panel"""
         panel = QGroupBox(zone_name)
-        panel.setFont(QFont('Arial', 10, QFont.Bold))
 
         panel.setStyleSheet("""
               QGroupBox {
-                  border: 2px solid #aaa;
-                  border-radius: 5px;
-                  margin-top: 10px;
-                  padding-top: 18px;
-                  background: #f8f8f8;
+                  font-weight: bold; font-size: 9pt; color: white;
+                  border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
+                  margin-top: 20px; padding-top: 20px;
+                  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                      stop:0 #004D40, stop:1 #00352c);
               }
               QGroupBox::title {
-                  subcontrol-origin: margin;
-                  left: 10px;
-                  padding: 0 5px;
+                  subcontrol-origin: margin; subcontrol-position: top center;
+                  padding: 2px 8px; color: white; background-color: #004D40;
               }
           """)
 
@@ -2794,17 +3447,20 @@ class TestStationInterface(QMainWindow):
         # Style the table
         measurement_table.setStyleSheet("""
               QTableWidget {
-                  background-color: white;
-                  gridline-color: #e0e0e0;
+                  background-color: #0d1117;
+                  color: #c9d1d9;
+                  gridline-color: #30363d;
+                  border: none;
               }
               QHeaderView::section {
-                  background-color: #e0e0e0;
+                  background-color: #1f2937;
+                  color: #7dd3fc;
                   padding: 4px;
-                  border: 1px solid #e0e0e0;
+                  border: 1px solid #30363d;
                   font-weight: bold;
               }
               QTableWidget::item {
-                  background-color: #f5f5f5;
+                  background-color: #161b22;
               }
           """)
 
@@ -2819,19 +3475,17 @@ class TestStationInterface(QMainWindow):
         panel_layout.addWidget(table_scroll)
 
         # Add test button
-        test_button = QPushButton(f"Test {zone_name}")
-        test_button.setFont(QFont('Arial', 9))
-        test_button.setFixedHeight(30)
+        test_button = QPushButton(f"▶  Test {zone_name}")
+        test_button.setFont(QFont('Arial', 9, QFont.Bold))
+        test_button.setFixedHeight(32)
+        test_button.setCursor(Qt.PointingHandCursor)
         test_button.setStyleSheet("""
               QPushButton {
-                  min-width: 80px;
-                  padding: 4px;
-                  background: #e0e0e0;
-                  border: 1px solid #aaa;
+                  background-color: #00695C; color: white; border: none;
+                  border-radius: 4px; padding: 4px 8px;
               }
-              QPushButton:hover {
-                  background: #d0d0d0;
-              }
+              QPushButton:hover   { background-color: #004D40; }
+              QPushButton:pressed { background-color: #003d31; }
           """)
         test_button.clicked.connect(lambda _, z=zone_name: self._start_impedance_zone_measurement(z))
         panel_layout.addWidget(test_button, alignment=Qt.AlignCenter)
@@ -2843,20 +3497,18 @@ class TestStationInterface(QMainWindow):
     def _create_resistance_zone_panel(self, zone_name):
         """Create a responsive resistance zone panel"""
         panel = QGroupBox(zone_name)
-        panel.setFont(QFont('Arial', 10, QFont.Bold))
 
         panel.setStyleSheet("""
                QGroupBox {
-                   border: 2px solid #aaa;
-                   border-radius: 5px;
-                   margin-top: 10px;
-                   padding-top: 18px;
-                   background: #f8f8f8;
+                   font-weight: bold; font-size: 9pt; color: white;
+                   border: 2px solid rgba(255,255,255,0.35); border-radius: 6px;
+                   margin-top: 20px; padding-top: 20px;
+                   background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                       stop:0 #311B92, stop:1 #1a0f5c);
                }
                QGroupBox::title {
-                   subcontrol-origin: margin;
-                   left: 10px;
-                   padding: 0 5px;
+                   subcontrol-origin: margin; subcontrol-position: top center;
+                   padding: 2px 8px; color: white; background-color: #311B92;
                }
            """)
 
@@ -2878,17 +3530,20 @@ class TestStationInterface(QMainWindow):
         # Style the table
         measurement_table.setStyleSheet("""
                QTableWidget {
-                   background-color: white;
-                   gridline-color: #e0e0e0;
+                   background-color: #0d1117;
+                   color: #c9d1d9;
+                   gridline-color: #30363d;
+                   border: none;
                }
                QHeaderView::section {
-                   background-color: #e0e0e0;
+                   background-color: #1f2937;
+                   color: #c4b5fd;
                    padding: 4px;
-                   border: 1px solid #e0e0e0;
+                   border: 1px solid #30363d;
                    font-weight: bold;
                }
                QTableWidget::item {
-                   background-color: #f5f5f5;
+                   background-color: #161b22;
                }
            """)
 
@@ -2903,19 +3558,17 @@ class TestStationInterface(QMainWindow):
         panel_layout.addWidget(table_scroll)
 
         # Add test button
-        test_button = QPushButton(f"Test {zone_name}")
-        test_button.setFont(QFont('Arial', 9))
-        test_button.setFixedHeight(30)
+        test_button = QPushButton(f"▶  Test {zone_name}")
+        test_button.setFont(QFont('Arial', 9, QFont.Bold))
+        test_button.setFixedHeight(32)
+        test_button.setCursor(Qt.PointingHandCursor)
         test_button.setStyleSheet("""
                QPushButton {
-                   min-width: 80px;
-                   padding: 4px;
-                   background: #e0e0e0;
-                   border: 1px solid #aaa;
+                   background-color: #4527A0; color: white; border: none;
+                   border-radius: 4px; padding: 4px 8px;
                }
-               QPushButton:hover {
-                   background: #d0d0d0;
-               }
+               QPushButton:hover   { background-color: #311B92; }
+               QPushButton:pressed { background-color: #200d6b; }
            """)
         test_button.clicked.connect(lambda _, z=zone_name: self._start_resistance_zone_measurement(z))
         panel_layout.addWidget(test_button, alignment=Qt.AlignCenter)
@@ -3032,7 +3685,7 @@ class TestStationInterface(QMainWindow):
                                 'overall_result': self.over_all_result
                             }
                         )
-                    self.excel_logger.update_overall_result(self.over_all_result)
+                    self.excel_logger.update_overall_result(self.over_all_result, finalize=False)
 
                     #self._log_resistance_message(f"Inside block5", is_error=True)
                     # Update the table
@@ -3302,7 +3955,7 @@ class TestStationInterface(QMainWindow):
                             }
                         )
                     """
-                    self.excel_logger.update_overall_result(self.over_all_result)
+                    self.excel_logger.update_overall_result(self.over_all_result, finalize=False)
                     # Update the table
                     self.update_impedance_measurement(
                         zone_name,
@@ -3329,9 +3982,9 @@ class TestStationInterface(QMainWindow):
 
     def _log_Impedance_message(self, message, is_error=False):
         if is_error:
-            self._log_output_imp.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self._log_output_imp.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self._log_output_imp.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+            self._log_output_imp.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
 
         self._log_output_imp.verticalScrollBar().setValue(
             self._log_output_imp.verticalScrollBar().maximum()
@@ -3346,6 +3999,19 @@ class TestStationInterface(QMainWindow):
                 self,
                 "PyVISA Error",
                 f"A PyVISA error occurred: {line.strip()}"
+            )
+            self.worker.stop()
+            return
+
+        if "No data found for frequencies" in line:
+            self._log_Impedance_message(line.strip(), is_error=True)
+            self.worker.stop()
+            return
+
+        if "mailbox error" in line.lower():
+            self._log_Impedance_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
             )
             self.worker.stop()
             return
@@ -3490,6 +4156,14 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
             return
 
+        if "mailbox error" in line.lower():
+            self._log_resistance_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            self.worker.stop()
+            return
+
         if "no ping" in line:
             self._log_Impedance_message(f"DIMM not connected to the Network", is_error=True)
             self.worker.stop()
@@ -3549,13 +4223,234 @@ class TestStationInterface(QMainWindow):
 
     def _log_resistance_message(self, message, is_error=False):
         if is_error:
-            self._log_output.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self._log_output.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self._log_output.append(f'<span style="color:green; font-weight:bold;">{message}</span>')
+            self._log_output.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         self._log_output.verticalScrollBar().setValue(
             self._log_output.verticalScrollBar().maximum()
         )
 
+
+    # ================================================================== #
+    #  Shared design-system constants & helpers                           #
+    # ================================================================== #
+
+    _DARK_CONSOLE_SS = """
+        QTextBrowser {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-top: none;
+            border-bottom-left-radius: 4px;
+            border-bottom-right-radius: 4px;
+            font-family: 'Courier New', Consolas, monospace;
+            font-size: 10pt;
+            padding: 6px;
+            selection-background-color: #264f78;
+        }
+    """
+
+    _CONSOLE_HDR_SS = """
+        QLabel {
+            background-color: #343a40;
+            color: #adb5bd;
+            font-size: 8pt;
+            font-weight: bold;
+            padding: 4px 8px;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+        }
+    """
+
+    _PILL_READY_SS = (
+        "QLabel { background-color:#17a2b8; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_RUN_SS = (
+        "QLabel { background-color:#fd7e14; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_PASS_SS = (
+        "QLabel { background-color:#28a745; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_FAIL_SS = (
+        "QLabel { background-color:#dc3545; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+    _PILL_GRAY_SS = (
+        "QLabel { background-color:#6c757d; color:white; padding:6px 14px;"
+        " border-radius:14px; font-weight:bold; font-size:10pt; }"
+    )
+
+    _BTN_GREEN_SS = """
+        QPushButton {
+            background-color: #28a745; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #218838; }
+        QPushButton:pressed  { background-color: #1e7e34; }
+        QPushButton:disabled { background-color: #94d3a2; color: #e9f7ed; }
+    """
+    _BTN_RED_SS = """
+        QPushButton {
+            background-color: #dc3545; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #c82333; }
+        QPushButton:pressed  { background-color: #bd2130; }
+        QPushButton:disabled { background-color: #e8a5ac; color: #fce0e3; }
+    """
+    _BTN_TEAL_SS = """
+        QPushButton {
+            background-color: #17a2b8; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #138496; }
+        QPushButton:pressed  { background-color: #117a8b; }
+        QPushButton:disabled { background-color: #8bd4df; color: #d9f3f7; }
+    """
+    _BTN_GRAY_SS = """
+        QPushButton {
+            background-color: #6c757d; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #5a6268; }
+        QPushButton:pressed  { background-color: #4e555b; }
+        QPushButton:disabled { background-color: #adb5bd; color: #e9ecef; }
+    """
+    _BTN_PURPLE_SS = """
+        QPushButton {
+            background-color: #6f42c1; color: white; border: none;
+            border-radius: 5px; font-size: 10pt; font-weight: bold; padding: 6px 18px;
+        }
+        QPushButton:hover    { background-color: #5e35b1; }
+        QPushButton:pressed  { background-color: #512da8; }
+        QPushButton:disabled { background-color: #c3a8e8; color: #f1ebfc; }
+    """
+
+    _PROGRESS_SS = """
+        QProgressBar {
+            border: 1px solid #adb5bd; border-radius: 5px; background-color: #e9ecef;
+            text-align: center; font-size: 8pt; color: #343a40;
+        }
+        QProgressBar::chunk {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 #28a745, stop:1 #20c997);
+            border-radius: 5px;
+        }
+    """
+
+    _ZONE_PANEL_SS = """
+        QGroupBox {
+            font-weight: bold; font-size: 9pt; color: #fff;
+            border: none; border-radius: 6px;
+            margin-top: 8px; padding-top: 14px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #1565C0, stop:1 #0d47a1);
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin; subcontrol-position: top center;
+            padding: 0 8px; color: white;
+        }
+    """
+
+    _STATE_IDLE_SS = """
+        QLabel {
+            background-color: #e9ecef; color: #6c757d;
+            border: 2px solid #ced4da; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+    _STATE_OPEN_SS = """
+        QLabel {
+            background-color: #dc3545; color: white;
+            border: 2px solid #c82333; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+    _STATE_CLOSED_SS = """
+        QLabel {
+            background-color: #28a745; color: white;
+            border: 2px solid #218838; border-radius: 6px;
+            font-size: 11pt; font-weight: bold; padding: 10px 20px;
+        }
+    """
+
+    def _make_tab_header(self, title, subtitle, color1="#1565C0", color2="#0288D1"):
+        """Return a styled gradient header QFrame for any tab."""
+        header = QFrame()
+        header.setMinimumHeight(52)
+        header.setStyleSheet(f"""
+            QFrame {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {color1}, stop:1 {color2});
+                border-radius: 6px;
+            }}
+        """)
+        hdr_l = QVBoxLayout(header)
+        hdr_l.setContentsMargins(16, 8, 16, 8)
+        hdr_l.setSpacing(2)
+        t = QLabel(title)
+        t.setWordWrap(True)
+        t.setStyleSheet(
+            "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
+        )
+        hdr_l.addWidget(t)
+        return header
+
+    def _make_status_pill(self, text="● Test: Ready"):
+        """Return a teal 'Ready' status pill label."""
+        lbl = QLabel(text)
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setMinimumWidth(170)
+        lbl.setStyleSheet(self._PILL_READY_SS)
+        return lbl
+
+    def _make_action_button(self, text, style_ss, min_height=38, min_width=150):
+        """Return a consistently styled action button."""
+        btn = QPushButton(text)
+        btn.setMinimumHeight(min_height)
+        btn.setMinimumWidth(min_width)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setStyleSheet(style_ss)
+        return btn
+
+    def _make_controls_row(self, pill, *buttons):
+        """Return an QHBoxLayout: pill | stretch | buttons..."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(pill)
+        row.addStretch()
+        for btn in buttons:
+            row.addWidget(btn)
+        return row
+
+    def _make_styled_progress(self, fmt="%p%", rng=(0, 100)):
+        """Return a gradient styled QProgressBar."""
+        pb = QProgressBar()
+        pb.setRange(*rng)
+        pb.setValue(0)
+        pb.setFormat(fmt)
+        pb.setMinimumHeight(22)
+        pb.setStyleSheet(self._PROGRESS_SS)
+        return pb
+
+    def _make_console_header(self, text="  Test Output"):
+        """Return the dark bar label placed above the dark console."""
+        lbl = QLabel(text)
+        lbl.setStyleSheet(self._CONSOLE_HDR_SS)
+        return lbl
+
+    def _make_dark_console(self, min_height=450, max_height=1500):
+        """Return a styled dark QTextBrowser terminal widget."""
+        c = QTextBrowser()
+        c.setMinimumHeight(min_height)
+        c.setMaximumHeight(max_height)
+        c.setStyleSheet(self._DARK_CONSOLE_SS)
+        return c
+
+    # ================================================================== #
 
     def create_test_tab(self, title, show_progress=False):
         tab = QWidget()
@@ -3584,443 +4479,461 @@ class TestStationInterface(QMainWindow):
         controls_layout.setContentsMargins(0, 0, 0, 0)
 
         if title == "Interlock System Check":
-            # Create the interlock test interface with console-like output
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "Interlock System Check",
+                "Verifies fan interlock and switch interlock state transitions (Open / Closed).",
+                "#b71c1c", "#e53935"
+            ))
 
-            # Status indicators
-            status_layout = QHBoxLayout()
-            self.test_status_label = QLabel('Test: Ready')
-            self.test_status_label.setAlignment(Qt.AlignCenter)
-            self.test_status_label.setStyleSheet("""
-                    QLabel {
-                        background-color: #17a2b8;
-                        color: white;
-                        padding: 2px 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                        font-size: 9pt;
-                    }
-                """)
-            status_layout.addWidget(self.test_status_label)
-
-            test_layout.addLayout(status_layout)
-
-            # Test controls
-            controls_layout = QHBoxLayout()
-
-            self.interlock_start_button = QPushButton('Start Test')
-            self.interlock_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.test_status_label = self._make_status_pill("● Test: Ready")
+            self.interlock_start_button = self._make_action_button(
+                "▶  Start Test", self._BTN_GREEN_SS
+            )
             self.interlock_start_button.clicked.connect(self.start_interlock_test)
-            controls_layout.addWidget(self.interlock_start_button)
-
-            self.interlock_end_button = QPushButton('End Test')
-            self.interlock_end_button.setStyleSheet("background-color: #dc3545; color: white;")
+            self.interlock_end_button = self._make_action_button(
+                "■  End Test", self._BTN_RED_SS
+            )
             self.interlock_end_button.clicked.connect(self.end_interlock_test)
             self.interlock_end_button.setEnabled(False)
-            controls_layout.addWidget(self.interlock_end_button)
+            test_layout.addLayout(
+                self._make_controls_row(
+                    self.test_status_label,
+                    self.interlock_start_button,
+                    self.interlock_end_button,
+                )
+            )
 
-            test_layout.addLayout(controls_layout)
+            # ── Interlock state indicators ─────────────────────────────────
+            interlock_state_group = QGroupBox("Switch State")
+            interlock_state_group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold; font-size: 9pt; color: #333;
+                    border: 1px solid #ced4da; border-radius: 6px;
+                    margin-top: 8px; padding-top: 10px;
+                    background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 12px; padding: 0 6px;
+                }
+            """)
+            state_outer = QHBoxLayout(interlock_state_group)
+            state_outer.setSpacing(12)
+            state_outer.setContentsMargins(12, 14, 12, 10)
 
-            # Interlock status indicators
             self.interlock_status_layout = QHBoxLayout()
-
-            self.interlock_open_label = QLabel('OPEN')
-            self.interlock_open_label.setStyleSheet("""
-                    QLabel {
-                        background-color: lightgray;
-                        color: black;
-                        padding: 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                    }
-                """)
+            self.interlock_open_label = QLabel("🔓  OPEN")
             self.interlock_open_label.setAlignment(Qt.AlignCenter)
-            self.interlock_status_layout.addWidget(self.interlock_open_label)
+            self.interlock_open_label.setMinimumHeight(54)
+            self.interlock_open_label.setStyleSheet(self._STATE_IDLE_SS)
 
-            self.interlock_closed_label = QLabel('CLOSED')
-            self.interlock_closed_label.setStyleSheet("""
-                    QLabel {
-                        background-color: lightgray;
-                        color: black;
-                        padding: 5px;
-                        border-radius: 3px;
-                        font-weight: bold;
-                    }
-                """)
+            self.interlock_closed_label = QLabel("🔒  CLOSED")
             self.interlock_closed_label.setAlignment(Qt.AlignCenter)
-            self.interlock_status_layout.addWidget(self.interlock_closed_label)
+            self.interlock_closed_label.setMinimumHeight(54)
+            self.interlock_closed_label.setStyleSheet(self._STATE_IDLE_SS)
 
+            state_outer.addWidget(self.interlock_open_label)
+            state_outer.addWidget(self.interlock_closed_label)
+            self.interlock_status_layout.addWidget(interlock_state_group)
             test_layout.addLayout(self.interlock_status_layout)
-            self.interlock_console = QTextBrowser()
-            self.interlock_console.setMinimumHeight(1000)  # Reduced size
-            self.interlock_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.interlock_console.setStyleSheet("""
-                                        QTextBrowser {
-                                            background-color: #f5f5f5;
-                                            border: 1px solid #ddd;
-                                            font-family: monospace;
-                                            font-size: 10pt;
-                                        }
-                                    """)
+
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Interlock Test Output"))
+            self.interlock_console = self._make_dark_console(min_height=600)
             test_layout.addWidget(self.interlock_console)
 
         elif title == "System Self Test":
-            status_layout = QHBoxLayout()
-            self.test_status_label_start = QLabel('Test: Ready')
-            self.test_status_label_start.setAlignment(Qt.AlignCenter)
-            self.test_status_label_start.setStyleSheet("""
-                                QLabel {
-                                    background-color: #17a2b8;
-                                    color: white;
-                                    padding: 2px 5px;
-                                    border-radius: 3px;
-                                    font-weight: bold;
-                                    font-size: 9pt;
-                                }
-                            """)
-            status_layout.addWidget(self.test_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "System Self Test",
+                "Executes a full end-to-end EtherCAT self-diagnostics pass on the DUT.",
+                "#1B5E20", "#388E3C"
+            ))
 
-            test_layout.addLayout(status_layout)
-            controls_layout = QHBoxLayout()
-
-            self.self_start_button = QPushButton('Start Test')
-            self.self_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.test_status_label_start = self._make_status_pill("● Test: Ready")
+            self.self_start_button = self._make_action_button(
+                "▶  Start Test", self._BTN_GREEN_SS
+            )
             self.self_start_button.clicked.connect(self.start_self_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.self_start_button)
-            test_layout.addLayout(controls_layout)
+            test_layout.addLayout(
+                self._make_controls_row(self.test_status_label_start, self.self_start_button)
+            )
 
-            self.selftest_console = QTextBrowser()
-            self.selftest_console.setMinimumHeight(500)  # Reduced size
-            self.selftest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.selftest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                        background-color: #f5f5f5;
-                                                        border: 1px solid #ddd;
-                                                        font-family: monospace;
-                                                        font-size: 10pt;
-                                                    }
-                                                """)
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Self Test Output"))
+            self.selftest_console = self._make_dark_console()
             test_layout.addWidget(self.selftest_console)
 
         elif title == "Impedance Scan":
-            # Create the main widget for this tab
+            # ── Header banner ──────────────────────────────────────────────
             impedance_widget = QWidget()
             impedance_layout = QVBoxLayout(impedance_widget)
-            impedance_layout.setContentsMargins(5, 5, 5, 5)
-            impedance_layout.setSpacing(10)
+            impedance_layout.setContentsMargins(0, 0, 0, 0)
+            impedance_layout.setSpacing(8)
 
-            # Frequency selection controls
+            impedance_layout.addWidget(self._make_tab_header(
+                "Impedance Scan",
+                "Measures complex impedance (R + jX) at selected frequency across all 5 RF zones.",
+                "#004D40", "#00897B"
+            ))
+
+            # ── Control panel ──────────────────────────────────────────────
             control_panel = QGroupBox("Test Parameters")
             control_panel.setStyleSheet("""
-                       QGroupBox {
-                           background-color: #f0f0f0;
-                           border: 1px solid #d0d0d0;
-                           border-radius: 4px;
-                           margin-top: 10px;
-                           padding-top: 15px;
-                       }
-                       QLabel {
-                           font-weight: bold;
-                           color: #333333;
-                       }
-                       QComboBox {
-                           background-color: white;
-                           border: 1px solid #d0d0d0;
-                           padding: 3px;
-                           font-weight: bold;
-                           color: #222222;
-                           min-width: 100px;
-                       }
-                   """)
-
+                QGroupBox {
+                    font-weight: bold; font-size: 9pt; color: #333;
+                    border: 1px solid #ced4da; border-radius: 6px;
+                    margin-top: 8px; padding-top: 10px; background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin; subcontrol-position: top left;
+                    left: 12px; padding: 0 6px;
+                }
+                QLabel { font-weight: bold; color: #333; }
+                QComboBox {
+                    background-color: white; border: 1px solid #ced4da;
+                    padding: 4px 8px; font-weight: bold; color: #222; min-width: 120px;
+                    border-radius: 4px;
+                }
+                QComboBox:hover { border-color: #0288D1; }
+            """)
             control_layout = QHBoxLayout(control_panel)
+            control_layout.setContentsMargins(12, 8, 12, 8)
 
-            # Frequency selection
             self.frequencies = ["362.3 KHz", "400 KHz", "500 KHz", "50 MHz", "60 MHz", "70 MHz"]
             freq_label = QLabel("Test Frequency:")
             freq_label.setFont(QFont('Arial', 10))
             self.freq_combo = QComboBox()
             self.freq_combo.addItems(self.frequencies)
-            self.freq_combo.setCurrentIndex(0)  # Default selection
+            self.freq_combo.setCurrentIndex(0)
             self.freq_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
             control_layout.addWidget(freq_label)
             control_layout.addWidget(self.freq_combo)
-
             control_layout.addStretch()
-
             impedance_layout.addWidget(control_panel)
 
-            # Zone setup
+            # ── Zone panels ────────────────────────────────────────────────
             self._zone_names_imp = ["Zone1-Inner", "Zone2-Mid_Inner", "Zone3-Mid_Edge", "Zone4-Edge", "Zone5-Outer"]
             self._relay_values_imp = [0, 1, 2, 4, 8, 16, 32, 64, 127, 128, 135, 141, 142, 143]
             self._measurement_tables_imp = {}
 
-            # Create a scroll area for the zones
             zones_scroll = QScrollArea()
             zones_scroll.setWidgetResizable(True)
             zones_container = QWidget()
             zones_layout = QHBoxLayout(zones_container)
             zones_layout.setContentsMargins(5, 5, 5, 5)
             zones_layout.setSpacing(10)
-
-            # Create zone panels with minimum sizing
             for zone in self._zone_names_imp:
                 zone_panel = self._create_Impedance_zone_panel(zone)
-                zone_panel.setMinimumWidth(250)  # Minimum width for each zone
+                zone_panel.setMinimumWidth(250)
                 zones_layout.addWidget(zone_panel)
-
             zones_scroll.setWidget(zones_container)
-            impedance_layout.addWidget(zones_scroll, stretch=1)  # Takes most of the space
+            impedance_layout.addWidget(zones_scroll, stretch=1)
 
-            # Console output at the bottom
-            console_group = QGroupBox("Measurement Log")
-            console_layout = QVBoxLayout(console_group)
-            self._log_output_imp = QTextBrowser()
-            self._log_output_imp.setMinimumHeight(150)
-            self._log_output_imp.setStyleSheet("""
-                       QTextBrowser {
-                           background-color: #f5f5f5;
-                           border: 1px solid #ddd;
-                           font-family: monospace;
-                           font-size: 10pt;
-                       }
-                   """)
+            # ── Measurement log ────────────────────────────────────────────
+            impedance_layout.addWidget(self._make_console_header("  Measurement Log"))
+            self._log_output_imp = self._make_dark_console(min_height=160, max_height=400)
+            impedance_layout.addWidget(self._log_output_imp)
 
-            clear_button = QPushButton("Clear Log")
-            clear_button.clicked.connect(self._clear_impedance_log_display)
-            clear_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            console_layout.addWidget(self._log_output_imp)
-            console_layout.addWidget(clear_button, alignment=Qt.AlignRight)
-
-            impedance_layout.addWidget(console_group, stretch=0)  # Takes less space
+            clear_btn_imp = self._make_action_button("Clear Log", self._BTN_GRAY_SS,
+                                                     min_height=30, min_width=100)
+            clear_btn_imp.clicked.connect(self._clear_impedance_log_display)
+            clear_btn_imp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            clear_row = QHBoxLayout()
+            clear_row.addStretch()
+            clear_row.addWidget(clear_btn_imp)
+            impedance_layout.addLayout(clear_row)
 
             test_layout.addWidget(impedance_widget)
 
         elif title == "Resistance Test":
-            # Create the main widget for this tab
+            # ── Header banner ──────────────────────────────────────────────
             resistance_widget = QWidget()
             resistance_layout = QVBoxLayout(resistance_widget)
-            resistance_layout.setContentsMargins(5, 5, 5, 5)
-            resistance_layout.setSpacing(10)
+            resistance_layout.setContentsMargins(0, 0, 0, 0)
+            resistance_layout.setSpacing(8)
 
-            # Zone names and relay values
+            resistance_layout.addWidget(self._make_tab_header(
+                "Resistance Test",
+                "Measures DC resistance (Ω) across relay setpoints for each of the 5 RF zones.",
+                "#311B92", "#4527A0"
+            ))
+
+            # ── Zone panels ────────────────────────────────────────────────
             self._zone_names = ["Zone1-Inner", "Zone2-Mid_Inner", "Zone3-Mid_Edge", "Zone4-Edge", "Zone5-Outer"]
             self._relay_values = [0, 1, 2, 4, 8, 16, 32, 64, 127]
             self._measurement_tables = {}
 
-            # Create a scroll area for the zones
             zones_scroll = QScrollArea()
             zones_scroll.setWidgetResizable(True)
             zones_container = QWidget()
             zones_layout = QHBoxLayout(zones_container)
             zones_layout.setContentsMargins(5, 5, 5, 5)
             zones_layout.setSpacing(10)
-
-            # Create zone panels with minimum sizing
             for zone in self._zone_names:
                 zone_panel = self._create_resistance_zone_panel(zone)
-                zone_panel.setMinimumWidth(250)  # Minimum width for each zone
+                zone_panel.setMinimumWidth(250)
                 zones_layout.addWidget(zone_panel)
-
             zones_scroll.setWidget(zones_container)
-            resistance_layout.addWidget(zones_scroll, stretch=1)  # Takes most of the space
+            resistance_layout.addWidget(zones_scroll, stretch=1)
 
-            # Console output at the bottom
-            console_group = QGroupBox("Measurement Log")
-            console_layout = QVBoxLayout(console_group)
-            self._log_output = QTextBrowser()
-            self._log_output.setMinimumHeight(150)
-            self._log_output.setStyleSheet("""
-                        QTextBrowser {
-                            background-color: #f5f5f5;
-                            border: 1px solid #ddd;
-                            font-family: monospace;
-                            font-size: 10pt;
-                        }
-                    """)
+            # ── Measurement log ────────────────────────────────────────────
+            resistance_layout.addWidget(self._make_console_header("  Measurement Log"))
+            self._log_output = self._make_dark_console(min_height=160, max_height=400)
+            resistance_layout.addWidget(self._log_output)
 
-            clear_button = QPushButton("Clear Log")
-            clear_button.clicked.connect(self._clear_resistance_log_display)
-            clear_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-
-            console_layout.addWidget(self._log_output)
-            console_layout.addWidget(clear_button, alignment=Qt.AlignRight)
-
-            resistance_layout.addWidget(console_group, stretch=0)  # Takes less space
+            clear_btn_res = self._make_action_button("Clear Log", self._BTN_GRAY_SS,
+                                                     min_height=30, min_width=100)
+            clear_btn_res.clicked.connect(self._clear_resistance_log_display)
+            clear_btn_res.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            clear_row = QHBoxLayout()
+            clear_row.addStretch()
+            clear_row.addWidget(clear_btn_res)
+            resistance_layout.addLayout(clear_row)
 
             test_layout.addWidget(resistance_widget)
 
         elif title == "DIMM Calibration":
-            DIMM_layout = QHBoxLayout()
-            self.DIMM_status_label_start = QLabel('Test: Ready')
-            self.DIMM_status_label_start.setAlignment(Qt.AlignCenter)
-            self.DIMM_status_label_start.setStyleSheet("""
-                                         QLabel {
-                                             background-color: #17a2b8;
-                                             color: white;
-                                             padding: 2px 5px;
-                                             border-radius: 3px;
-                                             font-weight: bold;
-                                             font-size: 9pt;
-                                         }
-                                     """)
-            DIMM_layout.addWidget(self.DIMM_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "DIMM Calibration",
+                "Runs the DIMM calibration sequence via the remote calibration script.",
+                "#E65100", "#F57C00"
+            ))
 
-            test_layout.addLayout(DIMM_layout)
-            controls_layout = QHBoxLayout()
-
-            self.dimm_start_button = QPushButton('Start calibration')
-            self.dimm_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.DIMM_status_label_start = self._make_status_pill("● Test: Ready")
+            self.dimm_start_button = self._make_action_button(
+                "▶  Start Calibration", self._BTN_GREEN_SS
+            )
             self.dimm_start_button.clicked.connect(self.dimm_cal_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.dimm_start_button)
-            test_layout.addLayout(controls_layout)
-            self.dimm_progress = QProgressBar()
-            self.dimm_progress.setRange(0, 100)
-            self.dimm_progress.setValue(0)
-            self.dimm_progress.setMinimumHeight(20)
-            self.dimm_progress.setStyleSheet("""
-                        QProgressBar {
-                            border: 1px solid grey;
-                            border-radius: 5px;
-                            text-align: center;
-                        }
-                        QProgressBar::chunk {
-                            background-color: #28a745;
-                            width: 10px;
-                        }
-                    """)
+            test_layout.addLayout(
+                self._make_controls_row(self.DIMM_status_label_start, self.dimm_start_button)
+            )
+
+            # ── Progress bar ───────────────────────────────────────────────
+            self.dimm_progress = self._make_styled_progress("%p% complete")
             test_layout.addWidget(self.dimm_progress)
-            # dimm = QProgressBar()
-            # dimm.setValue(0)
-            # dimm.setMinimumHeight(20)
-            # dimm.addWidget(dimm)
 
-            self.dimmtest_console = QTextBrowser()
-            self.dimmtest_console.setMinimumHeight(500)  # Reduced size
-            self.dimmtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.dimmtest_console.setStyleSheet("""
-                                                             QTextBrowser {
-                                                                 background-color: #f5f5f5;
-                                                                 border: 1px solid #ddd;
-                                                                 font-family: monospace;
-                                                                 font-size: 10pt;
-                                                             }
-                                                         """)
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Calibration Output"))
+            self.dimmtest_console = self._make_dark_console()
             test_layout.addWidget(self.dimmtest_console)
+
         elif title == "VNA Calibration":
-            VNA_layout = QHBoxLayout()
-            self.VNA_status_label_start = QLabel('Test: Ready')
-            self.VNA_status_label_start.setAlignment(Qt.AlignCenter)
-            self.VNA_status_label_start.setStyleSheet("""
-                                                     QLabel {
-                                                         background-color: #17a2b8;
-                                                         color: white;
-                                                         padding: 2px 5px;
-                                                         border-radius: 3px;
-                                                         font-weight: bold;
-                                                         font-size: 9pt;
-                                                     }
-                                                 """)
-            VNA_layout.addWidget(self.VNA_status_label_start)
+            # ── Header banner ──────────────────────────────────────────────
+            test_layout.addWidget(self._make_tab_header(
+                "VNA Calibration",
+                "Performs electronic calibration of the vector network analyser (E-Cal module required).",
+                "#880E4F", "#AD1457"
+            ))
 
-            test_layout.addLayout(VNA_layout)
-
-            controls_layout = QHBoxLayout()
-
-            self.VNA_start_button = QPushButton('Start calibration')
-            self.VNA_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            # ── Controls row ───────────────────────────────────────────────
+            self.VNA_status_label_start = self._make_status_pill("● Test: Ready")
+            self.VNA_start_button = self._make_action_button(
+                "▶  Start Calibration", self._BTN_GREEN_SS
+            )
             self.VNA_start_button.clicked.connect(self.VNA_cal_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.VNA_start_button)
-            test_layout.addLayout(controls_layout)
-            self.vna_progress = QProgressBar()
-            self.vna_progress.setRange(0, 100)
-            self.vna_progress.setValue(0)
-            self.vna_progress.setMinimumHeight(20)
-            self.vna_progress.setStyleSheet("""
-                             QProgressBar {
-                                 border: 1px solid grey;
-                                 border-radius: 5px;
-                                 text-align: center;
-                             }
-                             QProgressBar::chunk {
-                                 background-color: #28a745;
-                                 width: 10px;
-                             }
-                         """)
+            test_layout.addLayout(
+                self._make_controls_row(self.VNA_status_label_start, self.VNA_start_button)
+            )
+
+            # ── Progress bar ───────────────────────────────────────────────
+            self.vna_progress = self._make_styled_progress("%p% complete")
             test_layout.addWidget(self.vna_progress)
-            self.VNAtest_console = QTextBrowser()
-            self.VNAtest_console.setMinimumHeight(500)  # Reduced size
-            self.VNAtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
-            self.VNAtest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                    background-color: #f5f5f5;
-                                                    border: 1px solid #ddd;
-                                                    font-family: monospace;
-                                                    font-size: 10pt;
-                                                    }
-                                                    """)
+
+            # ── Console ────────────────────────────────────────────────────
+            test_layout.addWidget(self._make_console_header("  Calibration Output"))
+            self.VNAtest_console = self._make_dark_console()
             test_layout.addWidget(self.VNAtest_console)
 
         elif title == "Verify BNC Port":
-            BNC_layout = QHBoxLayout()
-            self.BNC_status_label_start = QLabel('Test: Ready')
+            # ================================================================
+            # BNC Port Verification – UI layout
+            # ================================================================
+
+            # ── Header banner ──────────────────────────────────────────────
+            header = QFrame()
+            header.setMinimumHeight(52)
+            header.setStyleSheet("""
+                QFrame {
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #1565C0, stop:1 #0288D1
+                    );
+                    border-radius: 6px;
+                }
+            """)
+            header_layout = QVBoxLayout(header)
+            header_layout.setContentsMargins(16, 8, 16, 8)
+            header_layout.setSpacing(2)
+
+            header_title = QLabel("BNC Port Verification")
+            header_title.setWordWrap(True)
+            header_title.setStyleSheet(
+                "color: white; font-size: 14pt; font-weight: bold; background: transparent;"
+            )
+            header_layout.addWidget(header_title)
+            test_layout.addWidget(header)
+
+            # ── Controls row (status pill + Start button) ──────────────────
+            controls_row = QHBoxLayout()
+            controls_row.setSpacing(12)
+
+            self.BNC_status_label_start = QLabel("● Test: Ready")
             self.BNC_status_label_start.setAlignment(Qt.AlignCenter)
+            self.BNC_status_label_start.setMinimumWidth(160)
             self.BNC_status_label_start.setStyleSheet("""
-                                                                 QLabel {
-                                                                     background-color: #17a2b8;
-                                                                     color: white;
-                                                                     padding: 2px 5px;
-                                                                     border-radius: 3px;
-                                                                     font-weight: bold;
-                                                                     font-size: 9pt;
-                                                                 }
-                                                             """)
-            BNC_layout.addWidget(self.BNC_status_label_start)
+                QLabel {
+                    background-color: #17a2b8;
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 14px;
+                    font-weight: bold;
+                    font-size: 10pt;
+                }
+            """)
 
-            test_layout.addLayout(BNC_layout)
-            controls_layout = QHBoxLayout()
-
-            self.BNC_start_button = QPushButton('Start')
-            self.BNC_start_button.setStyleSheet("background-color: #28a745; color: white;")
+            self.BNC_start_button = QPushButton("▶  Start Test")
+            self.BNC_start_button.setMinimumHeight(38)
+            self.BNC_start_button.setMinimumWidth(150)
+            self.BNC_start_button.setCursor(Qt.PointingHandCursor)
+            self.BNC_start_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    padding: 6px 18px;
+                }
+                QPushButton:hover    { background-color: #218838; }
+                QPushButton:pressed  { background-color: #1e7e34; }
+                QPushButton:disabled { background-color: #94d3a2; color: #e9f7ed; }
+            """)
             self.BNC_start_button.clicked.connect(self.BNC_test)
-            # self.self_start_button.clicked.connect()
-            controls_layout.addWidget(self.BNC_start_button)
-            test_layout.addLayout(controls_layout)
-            if show_progress:
-                progress = QProgressBar()
-                progress.setValue(0)
-                progress.setMinimumHeight(20)
-                test_layout.addWidget(progress)
-            # BNC = QProgressBar()
-            # BNC.setValue(0)
-            # BNC.setMinimumHeight(20)
-            # BNC.addWidget(BNC)
 
+            controls_row.addWidget(self.BNC_status_label_start)
+            controls_row.addStretch()
+            controls_row.addWidget(self.BNC_start_button)
+            test_layout.addLayout(controls_row)
+
+            # ── Zone status panel ──────────────────────────────────────────
+            zones_group = QGroupBox("Zone Status")
+            zones_group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold;
+                    font-size: 9pt;
+                    color: #333;
+                    border: 1px solid #ced4da;
+                    border-radius: 6px;
+                    margin-top: 8px;
+                    padding-top: 10px;
+                    background-color: #f8f9fa;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    subcontrol-position: top left;
+                    left: 12px;
+                    padding: 0 6px;
+                }
+            """)
+            zones_outer = QVBoxLayout(zones_group)
+            zones_outer.setSpacing(8)
+            zones_outer.setContentsMargins(10, 12, 10, 10)
+
+            # Four zone indicator boxes — subtitles from the class-level mapping
+            zone_row = QHBoxLayout()
+            zone_row.setSpacing(10)
+            ZONE_DEFS = [
+                (znum, f"Zone {znum}", subtitle)
+                for znum, subtitle in self._BNC_ZONE_SUBTITLES.items()
+            ]
+            self.BNC_zone_labels = {}
+            for znum, zname, zdesc in ZONE_DEFS:
+                lbl = QLabel(f"⬜  {zname}\n{zdesc}")
+                lbl.setAlignment(Qt.AlignCenter)
+                lbl.setMinimumHeight(56)
+                lbl.setStyleSheet("""
+                    QLabel {
+                        background-color: #e9ecef;
+                        color: #6c757d;
+                        border: 2px solid #ced4da;
+                        border-radius: 6px;
+                        font-size: 9pt;
+                        font-weight: bold;
+                        padding: 4px 6px;
+                    }
+                """)
+                self.BNC_zone_labels[znum] = lbl
+                zone_row.addWidget(lbl)
+            zones_outer.addLayout(zone_row)
+
+            # Progress bar inside the zone panel
+            self.bnc_progress_bar = QProgressBar()
+            self.bnc_progress_bar.setRange(0, 4)
+            self.bnc_progress_bar.setValue(0)
+            self.bnc_progress_bar.setFormat("%v / 4 zones complete")
+            self.bnc_progress_bar.setMinimumHeight(22)
+            self.bnc_progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #adb5bd;
+                    border-radius: 5px;
+                    background-color: #e9ecef;
+                    text-align: center;
+                    font-size: 8pt;
+                    color: #343a40;
+                }
+                QProgressBar::chunk {
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #28a745, stop:1 #20c997
+                    );
+                    border-radius: 5px;
+                }
+            """)
+            zones_outer.addWidget(self.bnc_progress_bar)
+            test_layout.addWidget(zones_group)
+
+            # ── Console header label ───────────────────────────────────────
+            console_header = QLabel("  Test Output")
+            console_header.setStyleSheet("""
+                QLabel {
+                    background-color: #343a40;
+                    color: #adb5bd;
+                    font-size: 8pt;
+                    font-weight: bold;
+                    padding: 4px 8px;
+                    border-top-left-radius: 4px;
+                    border-top-right-radius: 4px;
+                }
+            """)
+            test_layout.addWidget(console_header)
+
+            # ── Dark terminal console ──────────────────────────────────────
+            # Minimum height is 400 px (reduced from 500) to give room to the
+            # new zone status panel above while still showing ample output.
             self.BNCtest_console = QTextBrowser()
-            self.BNCtest_console.setMinimumHeight(500)  # Reduced size
+            self.BNCtest_console.setMinimumHeight(400)
             self.BNCtest_console.setMaximumHeight(1500)
-            # self.interlock_console.setMaximumBlockCount(500)
-            # self.interlock_console.document().setMaximumBlockCount(500)
             self.BNCtest_console.setStyleSheet("""
-                                                    QTextBrowser {
-                                                    background-color: #f5f5f5;
-                                                    border: 1px solid #ddd;
-                                                    font-family: monospace;
-                                                    font-size: 10pt;
-                                                    }
-                                                    """)
+                QTextBrowser {
+                    background-color: #0d1117;
+                    color: #c9d1d9;
+                    border: 1px solid #30363d;
+                    border-top: none;
+                    border-bottom-left-radius: 4px;
+                    border-bottom-right-radius: 4px;
+                    font-family: 'Courier New', Consolas, monospace;
+                    font-size: 10pt;
+                    padding: 6px;
+                    selection-background-color: #264f78;
+                }
+            """)
             test_layout.addWidget(self.BNCtest_console)
 
 
@@ -4034,9 +4947,9 @@ class TestStationInterface(QMainWindow):
     def append_interlock_message(self, message, is_error=False):
         """Helper method to append colored messages to interlock console"""
         if is_error:
-            self.interlock_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self.interlock_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self.interlock_console.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+            self.interlock_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         # Auto-scroll to bottom
         self.interlock_console.verticalScrollBar().setValue(
             self.interlock_console.verticalScrollBar().maximum()
@@ -4046,9 +4959,9 @@ class TestStationInterface(QMainWindow):
     def append_self_message(self, message, is_error=False):
         """Helper method to append colored messages to interlock console"""
         if is_error:
-            self.selftest_console.append(f'<span style="color:red; font-weight:bold;">{message}</span>')
+            self.selftest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
         else:
-            self.selftest_console.append(f'<span style="color:green;font-weight:bold;">{message}</span>')
+            self.selftest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
         # Auto-scroll to bottom
         self.selftest_console.verticalScrollBar().setValue(
             self.selftest_console.verticalScrollBar().maximum()
@@ -4066,8 +4979,8 @@ class TestStationInterface(QMainWindow):
                 self.handle_ssh_error(f"Connection failed: {message}")
                 self.append_self_message(f"SSH connection Failed", is_error=True)
                 return
-            self.test_status_label_start.setText("Running")
-            self.test_status_label_start.setStyleSheet("background-color: #ffc107; color: black;")
+            self.test_status_label_start.setText("● Running…")
+            self.test_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.append_self_message("\n==================Self Test Started=======================\n")
             self.append_self_message("\nWait Test in process..........\n")
             self.execute_command("selftest", self.handle_self_test_output, 0)
@@ -4117,8 +5030,8 @@ class TestStationInterface(QMainWindow):
             # Update UI
             self.interlock_start_button.setEnabled(False)
             self.interlock_end_button.setEnabled(True)
-            self.test_status_label.setText("Running")
-            self.test_status_label.setStyleSheet("background-color: #ffc107; color: black;")
+            self.test_status_label.setText("● Running…")
+            self.test_status_label.setStyleSheet(self._PILL_RUN_SS)
 
             # Start the thread
             self.worker.start()
@@ -4144,6 +5057,15 @@ class TestStationInterface(QMainWindow):
             self.interlock_start_button.setEnabled(True)
             self.worker.stop()
 
+        if "mailbox error" in line.lower():
+            self.append_interlock_message(
+                "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
+                is_error=True
+            )
+            self.interlock_start_button.setEnabled(True)
+            self.worker.stop()
+            return
+
         if "Cooling Fan Working" in line:
             self.fan_interlock = True
             self.append_interlock_message("✔ Fan Interlock Pass \n\n")
@@ -4164,14 +5086,14 @@ class TestStationInterface(QMainWindow):
 
         if "Interlock Open" in line:
             self.open_count += 1
-            self.interlock_open_label.setStyleSheet("background-color: #dc3545; color: white;")
+            self.interlock_open_label.setStyleSheet(self._STATE_OPEN_SS)
             self.interlock_open_label.setText(f"OPEN")
             if self.open_count == 1:
                 self.check_true += 1
                 # self.append_interlock_message("Interlock Open detected")
         elif "Interlock Closed" in line:
             self.closed_count += 1
-            self.interlock_closed_label.setStyleSheet("background-color: #28a745; color: white;")
+            self.interlock_closed_label.setStyleSheet(self._STATE_CLOSED_SS)
             self.interlock_closed_label.setText(f"CLOSED")
             if self.closed_count == 1:
                 self.check_true += 1
@@ -4206,15 +5128,15 @@ class TestStationInterface(QMainWindow):
                 if test_passed:
                     result_msg = "TEST PASSED - Interlock switch detected properly"
                     self.append_interlock_message(result_msg)
-                    self.test_status_label.setText("Passed")
-                    self.test_status_label.setStyleSheet("background-color: #28a745; color: white;")
+                    self.test_status_label.setText("● Completed — PASS")
+                    self.test_status_label.setStyleSheet(self._PILL_PASS_SS)
                     count = True
                 else:
                     result_msg = f"TEST FAILED -  Interlock test Fail"
                     self.over_all_result = 'FAIL'
                     self.append_interlock_message(result_msg, is_error=True)
-                    self.test_status_label.setText("Failed")
-                    self.test_status_label.setStyleSheet("background-color: #dc3545; color: white;")
+                    self.test_status_label.setText("● Completed — FAIL")
+                    self.test_status_label.setStyleSheet(self._PILL_FAIL_SS)
                     # Log to Excel
 
                 self.excel_logger.log_interlock_test(
@@ -4272,6 +5194,9 @@ class TestStationInterface(QMainWindow):
             if hasattr(self, 'worker') and self.worker:
                 self.worker.stop()
 
+            if hasattr(self, '_ssh_console_worker') and self._ssh_console_worker:
+                self._ssh_console_worker.stop()
+
             if hasattr(self, 'ssh_handler') and self.ssh_handler.is_connect:
                 self.ssh_handler.SSH_disconnect()
 
@@ -4291,14 +5216,21 @@ class TestStationInterface(QMainWindow):
         self.interlock_start_button.setEnabled(True)
         self.interlock_end_button.setEnabled(False)
         self.test_status_label.setText("Test: Ready")
-        self.test_status_label.setStyleSheet("background-color: #17a2b8; color: white;")
+        self.test_status_label.setStyleSheet(self._PILL_READY_SS)
 
 
     def create_unit_setup_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+
+        # ── Header banner ──────────────────────────────────────────────────
+        layout.addWidget(self._make_tab_header(
+            "Unit Setup",
+            "Enter PCB / assembly information, connect to the Raspberry Pi, and program the OTP.",
+            "#1a237e", "#283593"
+        ))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -4629,18 +5561,8 @@ class TestStationInterface(QMainWindow):
         console_layout.setSpacing(5)
 
         console_buttons = QHBoxLayout()
-        clear_btn = QPushButton("Clear Console")
-        clear_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #6c757d;
-                    color: white;
-                    padding: 5px 10px;
-                    font-size: 14px;
-                }
-                QPushButton:hover {
-                    background-color: #5a6268;
-                }
-            """)
+        clear_btn = self._make_action_button("⌫  Clear Console", self._BTN_GRAY_SS,
+                                             min_height=30, min_width=120)
         clear_btn.clicked.connect(lambda: self.console_output.clear() if hasattr(self, 'console_output') else None)
         console_buttons.addWidget(clear_btn)
         console_buttons.addStretch()
@@ -4648,18 +5570,20 @@ class TestStationInterface(QMainWindow):
 
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setAcceptRichText(True)  # Enable rich text formatting
+        self.console_output.setAcceptRichText(True)
         self.console_output.setStyleSheet("""
-                QTextEdit {
-                    background-color: #f8f9fa;
-                    border: 1px solid #ced4da;
-                    border-radius: 4px;
-                    font-family: 'Courier New', monospace;
-                    font-size: 30px;
-                    padding: 5px;
-                    min-height: 1000px;
-                }
-            """)
+            QTextEdit {
+                background-color: #0d1117;
+                color: #c9d1d9;
+                border: 1px solid #30363d;
+                border-radius: 4px;
+                font-family: 'Courier New', Consolas, monospace;
+                font-size: 11pt;
+                padding: 6px;
+                min-height: 600px;
+                selection-background-color: #264f78;
+            }
+        """)
         console_layout.addWidget(self.console_output)
         config_layout.addWidget(console_group)
         config_layout.addStretch(1)
@@ -4670,6 +5594,238 @@ class TestStationInterface(QMainWindow):
         layout.addWidget(scroll)
         return tab
 
+
+    def create_ssh_console_tab(self):
+        """Create a PuTTY/MobaXterm-style interactive SSH console tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # ── Header banner ──────────────────────────────────────────────────
+        layout.addWidget(self._make_tab_header(
+            "RPI Console",
+            "Interactive SSH terminal connected to the Raspberry Pi manufacturing controller.",
+            "#212121", "#37474F"
+        ))
+
+        # Terminal widget (created first so buttons can reference it directly)
+        self._ssh_console_output = TerminalWidget()
+
+        # ── Status / control bar ──────────────────────────────────────────
+        status_bar = QHBoxLayout()
+        status_bar.setSpacing(8)
+        rpi_host = self.ssh_handler.host
+        self._ssh_console_status = QLabel(f"⬤  Disconnected  |  {rpi_host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_GRAY_SS)
+        status_bar.addWidget(self._ssh_console_status)
+        status_bar.addStretch()
+
+        self._ssh_connect_btn = self._make_action_button("⚡  Connect", self._BTN_GREEN_SS,
+                                                         min_height=32, min_width=110)
+        self._ssh_connect_btn.clicked.connect(self._ssh_console_connect)
+        status_bar.addWidget(self._ssh_connect_btn)
+
+        self._ssh_disconnect_btn = self._make_action_button("✕  Disconnect", self._BTN_RED_SS,
+                                                            min_height=32, min_width=110)
+        self._ssh_disconnect_btn.setEnabled(False)
+        self._ssh_disconnect_btn.clicked.connect(self._ssh_console_disconnect)
+        status_bar.addWidget(self._ssh_disconnect_btn)
+
+        clear_btn = self._make_action_button("⌫  Clear", self._BTN_GRAY_SS,
+                                             min_height=32, min_width=80)
+        clear_btn.clicked.connect(self._ssh_console_output.clear)
+        status_bar.addWidget(clear_btn)
+
+        layout.addLayout(status_bar)
+        layout.addWidget(self._ssh_console_output, stretch=1)
+
+        # ── SCP file transfer bar ─────────────────────────────────────────
+        scp_bar = QHBoxLayout()
+        scp_bar.setSpacing(8)
+
+        self._scp_upload_btn = self._make_action_button("⬆  Upload to RPI", self._BTN_TEAL_SS,
+                                                        min_height=32, min_width=140)
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_upload_btn.clicked.connect(self._scp_upload)
+        scp_bar.addWidget(self._scp_upload_btn)
+
+        self._scp_download_btn = self._make_action_button("⬇  Download from RPI", self._BTN_PURPLE_SS,
+                                                          min_height=32, min_width=160)
+        self._scp_download_btn.setEnabled(False)
+        self._scp_download_btn.clicked.connect(self._scp_download)
+        scp_bar.addWidget(self._scp_download_btn)
+
+        scp_bar.addStretch()
+        layout.addLayout(scp_bar)
+
+        # Hint bar
+        hint = QLabel(
+            "Click terminal then type directly  |  "
+            "↑↓ history  ·  Tab completion  ·  Ctrl+C interrupt  ·  Ctrl+D EOF  ·  Right-click → Paste"
+        )
+        hint.setStyleSheet("color: #888; font-size: 8pt; padding: 2px 4px;")
+        layout.addWidget(hint)
+
+        self._ssh_console_worker = None
+        self._scp_worker = None
+        return tab
+
+    def _ssh_console_connect(self):
+        """Start the SSH console worker and connect to the Raspberry Pi."""
+        if self._ssh_console_worker and self._ssh_console_worker.isRunning():
+            return
+        h = self.ssh_handler
+        self._ssh_console_worker = SshConsoleWorker(
+            h.host, h.port, h.username, h.password
+        )
+        self._ssh_console_worker.output_ready.connect(self._ssh_console_append)
+        self._ssh_console_worker.connected.connect(self._ssh_console_on_connected)
+        self._ssh_console_worker.disconnected.connect(self._ssh_console_on_disconnected)
+        self._ssh_console_worker.error_occurred.connect(self._ssh_console_on_error)
+        self._ssh_console_worker.start()
+        self._ssh_connect_btn.setEnabled(False)
+        self._ssh_console_status.setText(f"⬤  Connecting…  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_RUN_SS)
+
+    def _ssh_console_disconnect(self):
+        """Stop the SSH console worker."""
+        if self._ssh_console_worker:
+            self._ssh_console_worker.stop()
+
+    def _ssh_console_append(self, text):
+        """Forward received SSH output to the terminal widget."""
+        self._ssh_console_output.write(text)
+
+    def _ssh_console_on_connected(self):
+        h = self.ssh_handler
+        self._ssh_console_status.setText(f"⬤  Connected  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_PASS_SS)
+        self._ssh_connect_btn.setEnabled(False)
+        self._ssh_disconnect_btn.setEnabled(True)
+        self._scp_upload_btn.setEnabled(True)
+        self._scp_download_btn.setEnabled(True)
+        self._ssh_console_output.set_send_fn(self._ssh_console_worker.send_command)
+        self._ssh_console_output.setFocus()
+
+    def _ssh_console_on_disconnected(self):
+        h = self.ssh_handler
+        self._ssh_console_status.setText(f"⬤  Disconnected  |  {h.host}")
+        self._ssh_console_status.setStyleSheet(self._PILL_GRAY_SS)
+        self._ssh_connect_btn.setEnabled(True)
+        self._ssh_disconnect_btn.setEnabled(False)
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_download_btn.setEnabled(False)
+        self._ssh_console_output.set_send_fn(None)
+
+    def _ssh_console_on_error(self, msg):
+        self._ssh_console_output.write(f'\n[ERROR] {msg}\n')
+        self._ssh_console_on_disconnected()
+
+    # ------------------------------------------------------------------
+    # SCP file transfer
+    # ------------------------------------------------------------------
+    def _scp_upload(self):
+        """Let the user pick a local file then browse the RPI to choose destination."""
+        import posixpath
+
+        # 1. Choose local file with a native file picker
+        local_path, _ = QFileDialog.getOpenFileName(
+            self, "Select file to upload to RPI"
+        )
+        if not local_path:
+            return
+
+        # 2. Browse the RPI filesystem to select the destination directory
+        h = self.ssh_handler
+        browser = RemoteFileBrowserDialog(
+            h.host, h.port, h.username, h.password,
+            mode='dir',
+            start_path=f'/home/{h.username}',
+            parent=self
+        )
+        if browser.exec_() != QDialog.Accepted:
+            return
+        remote_path = posixpath.join(
+            browser.selected_path, os.path.basename(local_path)
+        )
+        self._run_scp_worker('upload', local_path, remote_path)
+
+    def _scp_download(self):
+        """Browse the RPI filesystem to pick a file, then choose local save location."""
+        h = self.ssh_handler
+
+        # 1. Browse the RPI filesystem to select the remote file
+        browser = RemoteFileBrowserDialog(
+            h.host, h.port, h.username, h.password,
+            mode='file',
+            start_path=f'/home/{h.username}',
+            parent=self
+        )
+        if browser.exec_() != QDialog.Accepted:
+            return
+        remote_path = browser.selected_path
+
+        # 2. Choose local save path with a native save dialog
+        local_path, _ = QFileDialog.getSaveFileName(
+            self, "Save downloaded file as",
+            os.path.basename(remote_path)
+        )
+        if not local_path:
+            return
+        self._run_scp_worker('download', local_path, remote_path)
+
+    def _run_scp_worker(self, direction, local_path, remote_path):
+        """Start a ScpWorker for the given direction."""
+        if self._scp_worker and self._scp_worker.isRunning():
+            QMessageBox.information(self, "SCP Busy",
+                                    "A file transfer is already in progress.")
+            return
+        h = self.ssh_handler
+        self._scp_worker = ScpWorker(
+            h.host, h.port, h.username, h.password,
+            direction, local_path, remote_path
+        )
+        self._scp_worker.progress.connect(self._ssh_console_output.write)
+        self._scp_worker.finished.connect(self._on_scp_finished)
+        self._scp_upload_btn.setEnabled(False)
+        self._scp_download_btn.setEnabled(False)
+        self._scp_worker.start()
+
+    def _on_scp_finished(self, success, message):
+        self._ssh_console_output.write('\n' + message + '\n')
+        # Re-enable SCP buttons only when still connected
+        if self._ssh_console_worker and self._ssh_console_worker.isRunning():
+            self._scp_upload_btn.setEnabled(True)
+            self._scp_download_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # RPI Console tab password gate
+    # ------------------------------------------------------------------
+    _RPI_CONSOLE_PASSWORD = "lam@rpi"
+
+    def _on_tab_changed(self, index):
+        """Guard the RPI Console tab with a password prompt."""
+        if index != self._RPI_CONSOLE_TAB_INDEX:
+            # Remember this as the last accessible tab
+            self._last_tab_index = index
+            return
+        if self._rpi_console_unlocked:
+            return
+        pwd, ok = QInputDialog.getText(
+            self, "RPI Console – Access Required",
+            "Enter password to open the RPI Console:",
+            QLineEdit.Password
+        )
+        if ok and pwd == self._RPI_CONSOLE_PASSWORD:
+            self._rpi_console_unlocked = True
+        else:
+            if ok:  # wrong password was entered
+                QMessageBox.warning(self, "Access Denied", "Incorrect password.")
+            # Switch back to the previous tab without re-triggering the guard
+            self.tab_widget.blockSignals(True)
+            self.tab_widget.setCurrentIndex(self._last_tab_index)
+            self.tab_widget.blockSignals(False)
 
     def init_ui(self):
         """Initialize the user interface with responsive layouts"""
@@ -4694,6 +5850,13 @@ class TestStationInterface(QMainWindow):
         self.tab_widget.addTab(self.create_test_tab("System Self Test"), "Self Test")
         self.tab_widget.addTab(self.create_test_tab("DIMM Calibration"), "DIMM Cal")
         self.tab_widget.addTab(self.create_test_tab("VNA Calibration"), "VNA Cal")
+        self.tab_widget.addTab(self.create_ssh_console_tab(), "RPI Console")
+
+        # RPI Console tab is the last tab; guard it with a password
+        self._RPI_CONSOLE_TAB_INDEX = self.tab_widget.count() - 1
+        self._rpi_console_unlocked = False
+        self._last_tab_index = 0
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
         # Set the central widget
         main_scroll.setWidget(central_widget)
