@@ -1962,6 +1962,9 @@ class TestStationInterface(QMainWindow):
         self.init_ui()
         self.stop_increment = False
         self._soem_thread_started = False  # guards finally in auto_load_connect
+        self._soem_loading_timer = QTimer()
+        self._soem_loading_timer.timeout.connect(self._update_soem_loading_line)
+        self._soem_dot_count = 0
 
     def closeEvent(self, event):
         self.cleanup_resources()
@@ -2616,12 +2619,16 @@ class TestStationInterface(QMainWindow):
             QApplication.processEvents()
             self._soem_thread_started = True   # tell finally not to clean up
             self.soem_compile_worker = SoemCompileWorker(self.ssh_handler)
-            self.soem_compile_worker.output_ready.connect(self.append_console_message)
+            # Do NOT connect output_ready to the console – individual compile
+            # lines are suppressed.  A QTimer animates a "SOEM compiling…" dot
+            # indicator instead.
             self.soem_compile_worker.compile_done.connect(self._on_soemcompile_done)
             self.soem_compile_worker.error_occurred.connect(self._on_soemcompile_error)
             self.soem_compile_worker.start()
-            # Return now; _on_soemcompile_done / _on_soemcompile_error continue
-            # the flow once the thread finishes.
+            # Kick off the animated loading indicator
+            self._soem_dot_count = 0
+            self.append_console_message("SOEM compiling")
+            self._soem_loading_timer.start(500)  # tick every 500 ms
             return
 
         except Exception as e:
@@ -2643,8 +2650,42 @@ class TestStationInterface(QMainWindow):
     # Continuation slots called by SoemCompileWorker signals              #
     # ------------------------------------------------------------------ #
 
+    def _replace_last_console_line(self, html):
+        """Replace the text content of the last line in console_output with *html*.
+
+        Uses StartOfBlock / EndOfBlock anchors so the block separator (newline)
+        is preserved and adjacent lines are not merged.
+        """
+        if not (hasattr(self, 'console_output') and self.console_output is not None):
+            return
+        cursor = self.console_output.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.movePosition(QTextCursor.StartOfBlock)
+        cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.insertHtml(html)
+        self.console_output.verticalScrollBar().setValue(
+            self.console_output.verticalScrollBar().maximum()
+        )
+
+    def _update_soem_loading_line(self):
+        """Timer slot: cycles the trailing dots on the 'SOEM compiling…' line."""
+        self._soem_dot_count = (self._soem_dot_count % 3) + 1
+        dots = "." * self._soem_dot_count
+        self._replace_last_console_line(
+            f'<span style="color:#3fb950; font-weight:bold;">SOEM compiling{dots}</span>'
+        )
+
+    def _stop_soem_loading(self):
+        """Stop the loading animation and finalise the indicator line."""
+        self._soem_loading_timer.stop()
+
     def _on_soemcompile_error(self, error_msg):
         """Called when SoemCompileWorker emits error_occurred."""
+        self._stop_soem_loading()
+        self._replace_last_console_line(
+            '<span style="color:#f85149; font-weight:bold;">SOEM compile FAILED</span>'
+        )
         self.append_console_message(f"!!! ERROR !!!\n{error_msg}\n", is_error=True)
         self.logger.error(error_msg, extra={'func_name': 'soemcompile'})
         self.auto_load_btn.setEnabled(True)
@@ -2656,6 +2697,10 @@ class TestStationInterface(QMainWindow):
         Handles the compile output, then runs the remaining unit-setup
         commands (firmwarecheck, otpcheck, slaveinfo) and finalizes logging.
         """
+        self._stop_soem_loading()
+        self._replace_last_console_line(
+            '<span style="color:#3fb950; font-weight:bold;">SOEM compile done</span>'
+        )
         try:
             if stdout:
                 self.logger.debug(f"soemcompile stdout:\n{stdout}",
