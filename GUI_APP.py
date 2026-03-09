@@ -1965,6 +1965,8 @@ class TestStationInterface(QMainWindow):
         self._soem_loading_timer = QTimer()
         self._soem_loading_timer.timeout.connect(self._update_soem_loading_line)
         self._soem_dot_count = 0
+        self._self_test_worker = None   # Worker thread for the Self Test tab
+        self._self_test_lines = []      # accumulates streamed lines until done
 
     def closeEvent(self, event):
         self.cleanup_resources()
@@ -5177,21 +5179,67 @@ class TestStationInterface(QMainWindow):
                 excel_logger.reset_sheet("Self Test")
             self.self_t += 1
             self.selftest_console.clear()
-            success, message = self.ssh_handler.Connect_RPI()
-            if not success:
-                self.handle_ssh_error(f"Connection failed: {message}")
-                self.append_self_message(f"SSH connection Failed", is_error=True)
-                return
+            self._self_test_lines = []
+
+            # Clean up any previous self-test worker
+            if self._self_test_worker is not None:
+                try:
+                    self._self_test_worker.output_ready.disconnect(self._on_selftest_line)
+                    self._self_test_worker.finished_signal.disconnect(self._on_selftest_finished)
+                    self._self_test_worker.error_occurred.disconnect(self._on_selftest_error)
+                except (TypeError, RuntimeError):
+                    pass
+                self._self_test_worker.stop()
+                self._self_test_worker = None
+
+            # Create a Worker that streams each output line in real time.
+            # The Worker will Connect_RPI internally and disconnect on cleanup.
+            self._self_test_worker = Worker(
+                self.ssh_handler,
+                '/home/robot/Manufacturing_test/aipc_beta/test.py',
+                'ecat selftest',
+                timeout=300,
+            )
+            self._self_test_worker.output_ready.connect(self._on_selftest_line)
+            self._self_test_worker.finished_signal.connect(self._on_selftest_finished)
+            self._self_test_worker.error_occurred.connect(self._on_selftest_error)
+
+            self.self_start_button.setEnabled(False)
             self.test_status_label_start.setText("● Running…")
             self.test_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.append_self_message("\n==================Self Test Started=======================\n")
             self.append_self_message("\nWait Test in process..........\n")
-            self.execute_command("selftest", self.handle_self_test_output, 0)
+
+            self._self_test_worker.start()
+
         except Exception as e:
-            self.logger.error(f"Error in self_test : {str(e)}", exc_info=True, extra={'func_name': 'start_self_test'})
+            self.logger.error(f"Error in self_test : {str(e)}", exc_info=True,
+                              extra={'func_name': 'start_self_test'})
             QMessageBox.critical(self, "Error", f"SELF TEST FAIL: {str(e)}")
-        finally:
-            self.ssh_handler.SSH_disconnect()
+            self.self_start_button.setEnabled(True)
+
+    def _on_selftest_line(self, line):
+        """Slot: receives each output line streamed from the self-test Worker."""
+        if line:
+            self._self_test_lines.append(line)
+            self.append_self_message(line)
+
+    def _on_selftest_finished(self):
+        """Slot: called when the self-test Worker thread finishes."""
+        stdout = '\n'.join(self._self_test_lines)
+        stderr = ""  # stderr is captured inside the Worker and emitted via error_occurred
+        self.handle_self_test_output(stdout, stderr)
+        self.self_start_button.setEnabled(True)
+        self._self_test_worker = None
+
+    def _on_selftest_error(self, error_msg):
+        """Slot: called when the self-test Worker emits an error."""
+        self.append_self_message(f"ERROR: {error_msg}", is_error=True)
+        self.logger.error(error_msg, extra={'func_name': 'start_self_test'})
+        self.test_status_label_start.setText("● Completed — FAIL")
+        self.test_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
+        self.self_start_button.setEnabled(True)
+        self._self_test_worker = None
 
 
     def start_interlock_test(self):
