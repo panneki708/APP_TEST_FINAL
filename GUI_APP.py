@@ -1282,6 +1282,66 @@ class Worker(QThread):
             self.ssh_handler.SSH_disconnect()
 
 
+class SoemCompileWorker(QThread):
+    """Background thread that runs the SOEM compile command over an *already-
+    established* SSH connection, streams each output line in real time via
+    ``output_ready``, and emits the complete stdout/stderr via ``compile_done``
+    when the remote process finishes.  The SSH connection is intentionally
+    *not* closed here so the caller can continue with subsequent commands."""
+
+    # Each output line as it arrives
+    output_ready = pyqtSignal(str)
+    # Full accumulated stdout and stderr when the process ends
+    compile_done = pyqtSignal(str, str)
+    # Emitted when an unexpected exception occurs
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, ssh_handler):
+        super().__init__()
+        self.ssh_handler = ssh_handler
+        self._is_running = True
+        self._logger = logger.getChild('SoemCompileWorker')
+
+    def run(self):
+        try:
+            script_path = self.ssh_handler.script_path
+            stdin, stdout_ch, stderr_ch = self.ssh_handler.ssh.exec_command(
+                f'sudo python3 {script_path} soemcompile',
+                get_pty=True,
+            )
+            self._logger.info("soemcompile started in background thread",
+                              extra={'func_name': 'soemcompile'})
+
+            stdout_lines = []
+            while self._is_running:
+                line = stdout_ch.readline()
+                if not line:
+                    break
+                stripped = line.strip()
+                stdout_lines.append(stripped)
+                self._logger.debug(stripped, extra={'func_name': 'soemcompile'})
+                self.output_ready.emit(stripped)
+
+            stderr_data = ""
+            try:
+                stderr_data = stderr_ch.read().decode(errors='replace')
+            except Exception:
+                pass
+            if stderr_data:
+                self._logger.error(f"soemcompile stderr:\n{stderr_data}",
+                                   extra={'func_name': 'soemcompile'})
+
+            self.compile_done.emit('\n'.join(stdout_lines), stderr_data)
+
+        except Exception as exc:
+            self._logger.error(f"soemcompile thread error: {str(exc)}", exc_info=True,
+                               extra={'func_name': 'soemcompile'})
+            self.error_occurred.emit(f"SOEM compile error: {str(exc)}")
+
+    def stop(self):
+        self._is_running = False
+
+
 class SshConsoleWorker(QThread):
     """Worker thread that opens an interactive SSH shell and streams output."""
     output_ready = pyqtSignal(str)
@@ -1901,8 +1961,7 @@ class TestStationInterface(QMainWindow):
         self.SN = ''
         self.init_ui()
         self.stop_increment = False
-
-    def closeEvent(self, event):
+        self._soem_thread_started = False  # guards finally in auto_load_connect
         self.cleanup_resources()
         event.accept()
 
@@ -2549,22 +2608,78 @@ class TestStationInterface(QMainWindow):
                 self.handle_ssh_error(f"Connection failed: {message}")
                 return
 
-            # Execute commands sequentially
+            # Run SOEM compile in a background thread so the UI stays
+            # responsive during the (potentially long) compile step.
+            self.append_console_message("\n2. soemcompile\n")
+            QApplication.processEvents()
+            self._soem_thread_started = True   # tell finally not to clean up
+            self.soem_compile_worker = SoemCompileWorker(self.ssh_handler)
+            self.soem_compile_worker.output_ready.connect(self.append_console_message)
+            self.soem_compile_worker.compile_done.connect(self._on_soemcompile_done)
+            self.soem_compile_worker.error_occurred.connect(self._on_soemcompile_error)
+            self.soem_compile_worker.start()
+            # Return now; _on_soemcompile_done / _on_soemcompile_error continue
+            # the flow once the thread finishes.
+            return
+
+        except Exception as e:
+            # self.logger.error(f"Error in auto_load_connect: {str(e)}",exc_info=True,extra={'func_name': 'auto_load_connect'} )
+            self.auto_load_btn.setEnabled(True)
+            QMessageBox.critical(self, "Error", f"Auto load failed: {str(e)}")
+        finally:
+            # Only clean up here if the soemcompile thread was NOT started.
+            # When the thread IS running, _on_soemcompile_done / _on_soemcompile_error
+            # are responsible for re-enabling the button and disconnecting SSH.
+            # NOTE: _soem_thread_started is only ever written on the main GUI thread
+            # (here and in the two continuation slots), so no additional locking
+            # is required.
+            if not self._soem_thread_started:
+                self.auto_load_btn.setEnabled(True)
+                self.ssh_handler.SSH_disconnect()
+
+    # ------------------------------------------------------------------ #
+    # Continuation slots called by SoemCompileWorker signals              #
+    # ------------------------------------------------------------------ #
+
+    def _on_soemcompile_error(self, error_msg):
+        """Called when SoemCompileWorker emits error_occurred."""
+        self.append_console_message(f"!!! ERROR !!!\n{error_msg}\n", is_error=True)
+        self.logger.error(error_msg, extra={'func_name': 'soemcompile'})
+        self.auto_load_btn.setEnabled(True)
+        self.ssh_handler.SSH_disconnect()
+        self._soem_thread_started = False
+
+    def _on_soemcompile_done(self, stdout, stderr):
+        """Called when SoemCompileWorker emits compile_done.
+        Handles the compile output, then runs the remaining unit-setup
+        commands (firmwarecheck, otpcheck, slaveinfo) and finalizes logging.
+        """
+        try:
+            if stdout:
+                self.logger.debug(f"soemcompile stdout:\n{stdout}",
+                                  extra={'func_name': 'soemcompile'})
+            if stderr:
+                self.logger.error(f"soemcompile stderr:\n{stderr}",
+                                  extra={'func_name': 'soemcompile'})
+
+            if not self.handle_soemcompile_output(stdout, stderr):
+                return  # early exit; finally block handles cleanup
+
+            # Continue with remaining commands sequentially
             commands = [
-                ("soemcompile", self.handle_soemcompile_output),
                 ("firmwarecheck", self.handle_firmare_check_output),
                 ("otpcheck", self.handle_otpcheck_output),
                 ("slaveinfo", self.handle_slaveinfo_output)
             ]
-            val = 2
+            val = 3
             for cmd, handler in commands:
                 if not self.execute_command(cmd, handler, val):
                     if cmd != 'firmwarecheck':
-                        break  # Stop if any command fails
+                        return  # early exit; finally block handles cleanup
                     if self.Firmware_check == False:
-                        break
-
+                        return  # early exit; finally block handles cleanup
                 val = val + 1
+
             self.append_console_message(
                 "======================== Unit Setup completed====================================\n")
             # Log metadata along with test data
@@ -2581,7 +2696,7 @@ class TestStationInterface(QMainWindow):
                     'overall_result': '',  # Will be updated to PASS/FAIL
                     'test_fixture_sn': self.Fixture.text().strip(),
                     'vna_sn': self.VNA_SN.text().strip(),
-                    'ecal_sn':self.Ecal_SN.text().strip()
+                    'ecal_sn': self.Ecal_SN.text().strip()
                 }
             )
 
@@ -2609,12 +2724,13 @@ class TestStationInterface(QMainWindow):
             self.excel_logger.update_overall_result(self.test_result, PN=self.PN, SN=self.SN, finalize=False)
 
         except Exception as e:
-            # self.logger.error(f"Error in auto_load_connect: {str(e)}",exc_info=True,extra={'func_name': 'auto_load_connect'} )
-            self.auto_load_btn.setEnabled(True)
+            self.logger.error(f"Error after soemcompile: {str(e)}", exc_info=True,
+                              extra={'func_name': '_on_soemcompile_done'})
             QMessageBox.critical(self, "Error", f"Auto load failed: {str(e)}")
         finally:
             self.auto_load_btn.setEnabled(True)
             self.ssh_handler.SSH_disconnect()
+            self._soem_thread_started = False
 
     def dimm_cal_test(self):
         try:
