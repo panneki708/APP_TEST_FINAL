@@ -1962,6 +1962,8 @@ class TestStationInterface(QMainWindow):
         self.init_ui()
         self.stop_increment = False
         self._soem_thread_started = False  # guards finally in auto_load_connect
+
+    def closeEvent(self, event):
         self.cleanup_resources()
         event.accept()
 
