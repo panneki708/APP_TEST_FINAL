@@ -464,10 +464,15 @@ class ExcelLogger:
 
             # Create new filename based on result
             new_filename = f"{self.pn}_{self.sn}_{self.excel_time}_{result}.xlsx"
-            new_file_path = os.path.join("C:\\tmp", new_filename)
-            print("new_fil", new_file_path)
+            # Store the xlsx inside a subfolder whose name matches the file
+            # (without the .xlsx extension), e.g.:
+            #   C:\tmp\PN_SN_TIME_PASS\PN_SN_TIME_PASS.xlsx
+            folder_name = os.path.splitext(new_filename)[0]
+            new_file_path = os.path.join("C:\\tmp", folder_name, new_filename)
+            self.logger1.info(f"Target file path: {new_file_path}",
+                              extra={'func_name': 'update_overall_result'})
 
-            # If file already exists with different name, rename it
+            # If file already exists with different name, rename/move it
             if self.file_path != new_file_path:
                 if os.path.exists(self.file_path):
                     # If the file was already finalized as read-only (e.g. it
@@ -482,10 +487,16 @@ class ExcelLogger:
                             extra={'func_name': 'update_overall_result'}
                         )
 
+                    # Capture old directory before we update self.file_path
+                    old_dir = os.path.dirname(os.path.abspath(self.file_path))
+
+                    # Ensure the destination subfolder exists before moving
+                    os.makedirs(os.path.dirname(new_file_path), exist_ok=True)
+
                     # Close the workbook before renaming
                     self.workbook.close()
 
-                    # Rename the file
+                    # Move/rename the file into its new subfolder
                     os.rename(self.file_path, new_file_path)
                     self.file_path = new_file_path
 
@@ -493,6 +504,19 @@ class ExcelLogger:
                     self.workbook = load_workbook(self.file_path)
                     self.logger1.info(f"Renamed file to: {new_file_path}",
                                       extra={'func_name': 'update_overall_result'})
+
+                    # Clean up the old directory if it is now empty, is
+                    # different from the new file's parent, and is NOT the
+                    # base C:\tmp folder (to avoid accidentally removing it).
+                    new_dir = os.path.dirname(os.path.abspath(new_file_path))
+                    _tmp_root = os.path.abspath("C:\\tmp")
+                    if (old_dir != new_dir
+                            and os.path.normcase(old_dir) != os.path.normcase(_tmp_root)
+                            and os.path.isdir(old_dir)):
+                        try:
+                            os.rmdir(old_dir)  # only succeeds if the directory is empty
+                        except OSError:
+                            pass  # not empty or permission issue — leave it
 
             # Apply protection and read-only only when finalize=True AND the
             # workbook has not already been finalized in this state.
