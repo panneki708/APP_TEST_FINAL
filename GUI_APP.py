@@ -4144,7 +4144,7 @@ class TestStationInterface(QMainWindow):
             self.interlock_start_button.setEnabled(True)
             self.worker.stop()
 
-        if "Cooling Fan Working" in line:
+        if "Cooling Fan Working" in line and self.fan_interlock == 30:
             self.fan_interlock = True
             self.append_interlock_message("✔ Fan Interlock Pass \n\n")
             time.sleep(1)
@@ -4152,7 +4152,7 @@ class TestStationInterface(QMainWindow):
             self.append_interlock_message("\nPress the Interlock Switch.......\n")
             time.sleep(1)
 
-        if "Cooling Fan Warning" in line:
+        if "Cooling Fan Warning" in line and self.fan_interlock == 30:
             self.fan_interlock = False
             self.over_all_result = "FAIL"
             self.append_interlock_message("✖ Fan Interlock Fail \n\n", is_error=True)
