@@ -18,6 +18,7 @@ from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtWidgets import QDateEdit
 import os
 import stat
+import shutil
 import logging
 from logging.handlers import RotatingFileHandler
 from openpyxl import Workbook
@@ -94,11 +95,11 @@ def setup_logging():
 
         return wrapper
 
-    return logger, log_function
+    return logger, log_function, LOG_FILE
 
 
 # Initialize logging
-logger, log_function = setup_logging()
+logger, log_function, log_file_path = setup_logging()
 
 
 class ExcelLogger:
@@ -119,6 +120,7 @@ class ExcelLogger:
         self.excel_time=datetime.now().strftime("%Y%m%d_%H%M%S")
         self._is_finalized = False        # Set True after update_overall_result makes file read-only
         self._current_result = None       # Tracks worst result seen; FAIL is sticky (never downgraded to PASS)
+        self._log_file_path = log_file_path  # Path to the session log file
 
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -533,6 +535,20 @@ class ExcelLogger:
                 self._is_finalized = True
                 self.logger1.info("Workbook finalized; further saves are disabled.",
                                   extra={'func_name': 'update_overall_result'})
+
+                # Copy the session log file into the same subfolder as the xlsx
+                # so that both artefacts are co-located in C:\tmp\<name_no_ext>\
+                dest_dir = os.path.dirname(self.file_path)
+                if self._log_file_path and os.path.exists(self._log_file_path) and os.path.isdir(dest_dir):
+                    try:
+                        dest_log = os.path.join(dest_dir, os.path.basename(self._log_file_path))
+                        shutil.copy2(self._log_file_path, dest_log)
+                        self.logger1.info(f"Copied log file to: {dest_log}",
+                                          extra={'func_name': 'update_overall_result'})
+                    except Exception:
+                        self.logger1.warning("Could not copy log file into result folder.",
+                                             exc_info=True,
+                                             extra={'func_name': 'update_overall_result'})
 
             return True
 
