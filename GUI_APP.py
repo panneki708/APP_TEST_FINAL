@@ -466,10 +466,10 @@ class ExcelLogger:
 
             # Create new filename based on result
             new_filename = f"{self.pn}_{self.sn}_{self.excel_time}_{result}.xlsx"
-            # Store the xlsx inside a subfolder whose name matches the file
-            # (without the .xlsx extension), e.g.:
-            #   C:\tmp\PN_SN_TIME_PASS\PN_SN_TIME_PASS.xlsx
-            folder_name = os.path.splitext(new_filename)[0]
+            # The containing folder uses only PN_SN_TIME (no PASS/FAIL suffix)
+            # so the folder name is stable regardless of test outcome, e.g.:
+            #   C:\tmp\PN_SN_TIME\PN_SN_TIME_PASS.xlsx
+            folder_name = f"{self.pn}_{self.sn}_{self.excel_time}"
             new_file_path = os.path.join("C:\\tmp", folder_name, new_filename)
             self.logger1.info(f"Target file path: {new_file_path}",
                               extra={'func_name': 'update_overall_result'})
