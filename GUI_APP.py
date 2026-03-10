@@ -1941,6 +1941,9 @@ class TestStationInterface(QMainWindow):
         self.vna_timer = QTimer()
         self.vna_timer.timeout.connect(self.update_vna_progress)
         self.dimm_timer.timeout.connect(self.update_dimm_progress)
+        self.bnc_idle_timer = QTimer()
+        self.bnc_idle_timer.setSingleShot(True)
+        self.bnc_idle_timer.timeout.connect(self._on_bnc_idle_timeout)
         self.dimm_progress_value = 0
         self.vna_progress_value = 0
         self.names = ''
@@ -3038,7 +3041,6 @@ class TestStationInterface(QMainWindow):
         retval = msg.exec_()
 
         if retval == QMessageBox.Ok:
-            self.start_time1 = time.time()
             self.append_BNC_message(f"\nTesting Zone {zone_number}...\n")
 
             # Start a new worker for the remote BNC test script
@@ -3052,7 +3054,10 @@ class TestStationInterface(QMainWindow):
             self.worker.finished_signal.connect(lambda: self._set_tabs_locked(False))
             self.worker.start()
             self._set_tabs_locked(True)
+            # Start (or restart) the 5-minute idle watchdog
+            self.bnc_idle_timer.start(300_000)
         else:
+            self.bnc_idle_timer.stop()
             self.append_BNC_message("Test cancelled by user", is_error=True)
             self.BNC_start_button.setEnabled(True)
             self._set_tabs_locked(False)
@@ -3235,6 +3240,7 @@ class TestStationInterface(QMainWindow):
                 """
             self.BNC_status_label_start.setText(status_text)
             self.BNC_status_label_start.setStyleSheet(status_style)
+            self.bnc_idle_timer.stop()
             self.BNC_start_button.setEnabled(True)
             self._set_tabs_locked(False)
 
@@ -3248,12 +3254,16 @@ class TestStationInterface(QMainWindow):
         :meth:`_handle_bnc_zone_result`, which parses the CSV payload, logs
         the result, and advances to the next zone prompt.
 
-        A 90-second watchdog is also checked on every line; if no useful data
-        has arrived within that window the worker is stopped with a warning.
+        A 5-minute idle watchdog timer is reset on every received line.  If
+        no line arrives within that window the timer fires, displays an error,
+        and restores the UI to its idle state.
 
         Args:
             line (str): A single line of text received from the remote process.
         """
+        # Reset the idle watchdog on every received line
+        self.bnc_idle_timer.start(300_000)
+
         # --- Infrastructure error checks ------------------------------------
         if "Error in slave initialization" in line:
             QMessageBox.critical(
@@ -3298,17 +3308,19 @@ class TestStationInterface(QMainWindow):
         elif "Zone5-Outer" in line:
             self._handle_bnc_zone_result("Zone5-Outer", "Zone5", line, next_zone_number=None)
 
-        # --- Watchdog: abort if no data received within 90 seconds ----------
-        if time.time() - self.start_time1 > 90:
-            self.append_BNC_message(
-                "=== No data from Raspberry Pi for more than 90 s. "
-                "Please check the Raspberry Pi. ===",
-                is_error=True,
-            )
-            self.worker.stop()
+    def _on_bnc_idle_timeout(self):
+        """Called when no output line has been received from the BNC script for 5 minutes."""
+        self.append_BNC_message(
+            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
+            "Please check the Raspberry Pi connection. ===",
+            is_error=True,
+        )
+        self.worker.stop()
+        self._bnc_restore_failed_state()
 
     def _bnc_restore_failed_state(self):
         """Re-enable the BNC Start button, set status to Failed, and unlock tabs."""
+        self.bnc_idle_timer.stop()
         self.BNC_start_button.setEnabled(True)
         self.BNC_status_label_start.setText("● Failed")
         self.BNC_status_label_start.setStyleSheet("""
