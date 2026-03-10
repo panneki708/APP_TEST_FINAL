@@ -3263,6 +3263,7 @@ class TestStationInterface(QMainWindow):
                 "Please check the EtherCAT connection and restart the test.",
             )
             self.worker.stop()
+            self._bnc_restore_failed_state()
             return
 
         if "pyvisa.errors" in line:
@@ -3272,6 +3273,7 @@ class TestStationInterface(QMainWindow):
                 f"A PyVISA error occurred:\n{line.strip()}",
             )
             self.worker.stop()
+            self._bnc_restore_failed_state()
             return
 
         if "mailbox error" in line.lower():
@@ -3280,6 +3282,7 @@ class TestStationInterface(QMainWindow):
                 is_error=True
             )
             self.worker.stop()
+            self._bnc_restore_failed_state()
             return
 
         # --- Zone result dispatch -------------------------------------------
@@ -3304,18 +3307,9 @@ class TestStationInterface(QMainWindow):
             )
             self.worker.stop()
 
-    def handle_BNC_error(self, error_msg):
-        """Handle an error signal emitted by the BNC test worker.
-
-        Displays the error in the console, re-enables the Start button, and
-        cleans up any active resources.
-
-        Args:
-            error_msg (str): The error message reported by the worker.
-        """
-        self.append_BNC_message(f"ERROR: {error_msg}", is_error=True)
+    def _bnc_restore_failed_state(self):
+        """Re-enable the BNC Start button, set status to Failed, and unlock tabs."""
         self.BNC_start_button.setEnabled(True)
-        self.cleanup_resources()
         self.BNC_status_label_start.setText("● Failed")
         self.BNC_status_label_start.setStyleSheet("""
             QLabel {
@@ -3327,6 +3321,20 @@ class TestStationInterface(QMainWindow):
                 font-size: 10pt;
             }
         """)
+        self._set_tabs_locked(False)
+
+    def handle_BNC_error(self, error_msg):
+        """Handle an error signal emitted by the BNC test worker.
+
+        Displays the error in the console, re-enables the Start button, and
+        cleans up any active resources.
+
+        Args:
+            error_msg (str): The error message reported by the worker.
+        """
+        self.append_BNC_message(f"ERROR: {error_msg}", is_error=True)
+        self.cleanup_resources()
+        self._bnc_restore_failed_state()
 
 
     @log_function
