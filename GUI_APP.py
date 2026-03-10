@@ -1897,6 +1897,10 @@ class TerminalWidget(QPlainTextEdit):
 
 
 class TestStationInterface(QMainWindow):
+    # No-output idle watchdog timeout (milliseconds).  Change only here; the
+    # error dialog text is derived from this value automatically.
+    _IDLE_TIMEOUT_MS: int = 120_000  # 2 minutes
+
     def __init__(self):
         super().__init__()
         self.excel_logger = excel_logger
@@ -2279,7 +2283,7 @@ class TestStationInterface(QMainWindow):
             # Start the thread
             self.worker.start()
             self._set_tabs_locked(True)
-            self.vna_idle_timer.start(300_000)
+            self.vna_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         except Exception as e:
             self.append_vna_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -2288,7 +2292,7 @@ class TestStationInterface(QMainWindow):
     def handle_vna_output(self, line):
         try:
             # Reset the 5-minute idle watchdog on every received line
-            self.vna_idle_timer.start(300_000)
+            self.vna_idle_timer.start(self._IDLE_TIMEOUT_MS)
             self.append_vna_message(f"{line}\n")
             if "no ping" in line:
                 self.append_vna_message(f"VNA not connected to the Network", is_error=True)
@@ -2341,12 +2345,12 @@ class TestStationInterface(QMainWindow):
             self.VNA_start_button.setEnabled(True)
 
     def _on_vna_idle_timeout(self):
-        """Called when no output line has been received from the VNA script for 5 minutes."""
+        """Called when no output line has been received from the VNA script for 2 minutes."""
         self.append_vna_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("VNA Calibration")
         self.vna_timer.stop()
         self.worker.stop()
         self.VNA_start_button.setEnabled(True)
@@ -2855,7 +2859,7 @@ class TestStationInterface(QMainWindow):
             # Start the thread
             self.worker.start()
             self._set_tabs_locked(True)
-            self.dimm_idle_timer.start(300_000)
+            self.dimm_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         except Exception as e:
             self.append_dimm_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -2864,7 +2868,7 @@ class TestStationInterface(QMainWindow):
     def handle_dimm_output(self, line):
         try:
             # Reset the 5-minute idle watchdog on every received line
-            self.dimm_idle_timer.start(300_000)
+            self.dimm_idle_timer.start(self._IDLE_TIMEOUT_MS)
             if "no ping" in line:
                 self.append_dimm_message(f"DIMM not connected to the Network", is_error=True)
                 self.dimm_timer.stop()
@@ -2928,12 +2932,12 @@ class TestStationInterface(QMainWindow):
 
 
     def _on_dimm_idle_timeout(self):
-        """Called when no output line has been received from the DIMM script for 5 minutes."""
+        """Called when no output line has been received from the DIMM script for 2 minutes."""
         self.append_dimm_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("DIMM Calibration")
         self.dimm_timer.stop()
         self.worker.stop()
         self.DIMM_status_label_start.setText('● Failed')
@@ -3115,7 +3119,7 @@ class TestStationInterface(QMainWindow):
             self.worker.start()
             self._set_tabs_locked(True)
             # Start (or restart) the 5-minute idle watchdog
-            self.bnc_idle_timer.start(300_000)
+            self.bnc_idle_timer.start(self._IDLE_TIMEOUT_MS)
         else:
             self.bnc_idle_timer.stop()
             self.append_BNC_message("Test cancelled by user", is_error=True)
@@ -3322,7 +3326,7 @@ class TestStationInterface(QMainWindow):
             line (str): A single line of text received from the remote process.
         """
         # Reset the idle watchdog on every received line
-        self.bnc_idle_timer.start(300_000)
+        self.bnc_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         # --- Infrastructure error checks ------------------------------------
         if "Error in slave initialization" in line:
@@ -3369,12 +3373,12 @@ class TestStationInterface(QMainWindow):
             self._handle_bnc_zone_result("Zone5-Outer", "Zone5", line, next_zone_number=None)
 
     def _on_bnc_idle_timeout(self):
-        """Called when no output line has been received from the BNC script for 5 minutes."""
+        """Called when no output line has been received from the BNC script for 2 minutes."""
         self.append_BNC_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("BNC Test")
         self.worker.stop()
         self._bnc_restore_failed_state()
 
@@ -4092,7 +4096,7 @@ class TestStationInterface(QMainWindow):
                 # Start the thread
                 self.worker.start()
                 self._set_tabs_locked(True)
-                self.imp_idle_timer.start(300_000)
+                self.imp_idle_timer.start(self._IDLE_TIMEOUT_MS)
                 self._log_Impedance_message(f"Starting measurement for {zone_name}")
             else:
                 self._log_Impedance_message(f"Impedance Scan {zone_name} suspended,is_error= True")
@@ -4295,7 +4299,7 @@ class TestStationInterface(QMainWindow):
 
     def handle_Zone_impedance_output(self, line):
         # Reset the 5-minute idle watchdog on every received line
-        self.imp_idle_timer.start(300_000)
+        self.imp_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         # self._log_resistance_message(f"{line}")
         # self._log_Impedance_message(f"{line}")
@@ -4355,12 +4359,12 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
 
     def _on_imp_idle_timeout(self):
-        """Called when no output line has been received from the impedance script for 5 minutes."""
+        """Called when no output line has been received from the impedance script for 2 minutes."""
         self._log_Impedance_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("Impedance Scan")
         self.worker.stop()
         self._set_tabs_locked(False)
 
@@ -4450,7 +4454,7 @@ class TestStationInterface(QMainWindow):
                 # Start the thread
                 self.worker.start()
                 self._set_tabs_locked(True)
-                self.res_idle_timer.start(300_000)
+                self.res_idle_timer.start(self._IDLE_TIMEOUT_MS)
                 self._log_resistance_message(f"Starting measurement for {zone_name}")
 
             else:
@@ -4469,7 +4473,7 @@ class TestStationInterface(QMainWindow):
 
     def handle_Zone_output(self, line):
         # Reset the 5-minute idle watchdog on every received line
-        self.res_idle_timer.start(300_000)
+        self.res_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         # self._log_resistance_message(f"{line}")
         if "pyvisa.errors" in line:
@@ -4520,12 +4524,12 @@ class TestStationInterface(QMainWindow):
             self.worker.stop()
 
     def _on_res_idle_timeout(self):
-        """Called when no output line has been received from the resistance script for 5 minutes."""
+        """Called when no output line has been received from the resistance script for 2 minutes."""
         self._log_resistance_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("Resistance Scan")
         self.worker.stop()
         self._set_tabs_locked(False)
 
@@ -5421,7 +5425,7 @@ class TestStationInterface(QMainWindow):
             # Start the thread
             self.worker.start()
             self._set_tabs_locked(True)
-            self.interlock_idle_timer.start(300_000)
+            self.interlock_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         except Exception as e:
             self.append_interlock_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -5437,7 +5441,7 @@ class TestStationInterface(QMainWindow):
     def handle_interlock_output(self, line):
         """Handle output from the interlock test"""
         # Reset the 5-minute idle watchdog on every received line
-        self.interlock_idle_timer.start(300_000)
+        self.interlock_idle_timer.start(self._IDLE_TIMEOUT_MS)
 
         if "Error in slave initialization" in line:
             QMessageBox.critical(
@@ -5497,12 +5501,12 @@ class TestStationInterface(QMainWindow):
             self.check_true += 1
 
     def _on_interlock_idle_timeout(self):
-        """Called when no output line has been received from the interlock script for 5 minutes."""
+        """Called when no output line has been received from the interlock script for 2 minutes."""
         self.append_interlock_message(
-            "=== ERROR: No output received from Raspberry Pi for 5 minutes. "
-            "Please check the Raspberry Pi connection. ===",
+            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
             is_error=True,
         )
+        self._show_idle_timeout_error("Interlock Test")
         self.worker.stop()
         self.interlock_start_button.setEnabled(True)
         self.interlock_end_button.setEnabled(False)
@@ -5641,6 +5645,64 @@ class TestStationInterface(QMainWindow):
             self.logger.error(f"Cleanup error: {str(e)}", exc_info=True, extra={'func_name': 'cleanup_resources'})
         finally:
             self._set_tabs_locked(False)
+
+    def _show_idle_timeout_error(self, test_name: str = "Test") -> None:
+        """Show a prominent, styled error dialog when the idle watchdog fires.
+
+        The dialog is modal, red-themed and carries a clear action message so the
+        operator knows exactly what happened and what to do next.
+        The timeout duration is derived from :attr:`_IDLE_TIMEOUT_MS` so there is
+        a single source of truth.
+        """
+        timeout_minutes = self._IDLE_TIMEOUT_MS // 60_000
+        msg = QMessageBox(self)
+        msg.setWindowTitle(f"⚠  {test_name} — Communication Timeout")
+        msg.setIcon(QMessageBox.Critical)
+        msg.setText(
+            "<span style='font-size:13pt; font-weight:bold; color:#c0392b;'>"
+            "No data from Raspberry Pi"
+            "</span>"
+        )
+        msg.setInformativeText(
+            f"<span style='font-size:10pt;'>"
+            f"EtherCAT data stream has been interrupted for {timeout_minutes} minute(s).<br><br>"
+            f"<b>Please contact the support team.</b>"
+            f"</span>"
+        )
+        msg.setDetailedText(
+            f"The test worker produced no output for {timeout_minutes} consecutive minute(s).\n"
+            "This usually means the EtherCAT connection to the Raspberry Pi has\n"
+            "been lost or the remote script has crashed.\n\n"
+            "Suggested actions:\n"
+            "  1. Check the EtherCAT / network cable to the Raspberry Pi.\n"
+            "  2. Verify the Raspberry Pi is powered and the script can run.\n"
+            "  3. Restart the test from the beginning.\n"
+            "  4. If the problem persists, contact the support team."
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.setDefaultButton(QMessageBox.Ok)
+        # Apply a red-accented stylesheet so the dialog is impossible to miss
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #2b2b2b;
+            }
+            QLabel {
+                color: #f0f0f0;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }
+            QPushButton {
+                background-color: #c0392b;
+                color: white;
+                border-radius: 6px;
+                padding: 6px 22px;
+                font-weight: bold;
+                font-size: 10pt;
+            }
+            QPushButton:hover {
+                background-color: #e74c3c;
+            }
+        """)
+        msg.exec_()
 
 
     def on_interlock_test_finished(self):
