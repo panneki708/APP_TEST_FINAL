@@ -2260,6 +2260,7 @@ class TestStationInterface(QMainWindow):
 
             # Start the thread
             self.worker.start()
+            self._set_tabs_locked(True)
 
         except Exception as e:
             self.append_vna_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -2316,6 +2317,7 @@ class TestStationInterface(QMainWindow):
     def on_vna_test_finished(self):
         self.vna_timer.stop()
         self.VNA_start_button.setEnabled(True)
+        self._set_tabs_locked(False)
         if hasattr(self, 'worker') and self.worker:
             self.worker.stop()
 
@@ -2469,6 +2471,7 @@ class TestStationInterface(QMainWindow):
             # Validate PCB Part Number
             # logger.info("Unit SETUP Test")
             self.auto_load_btn.setEnabled(False)
+            self._set_tabs_locked(True)
             self.append_console_message("==========TEST Started=============\n")
             Fixture = self.Fixture.text().strip()
             Testing_name = self.Test_name.text().strip()
@@ -2636,6 +2639,7 @@ class TestStationInterface(QMainWindow):
         except Exception as e:
             # self.logger.error(f"Error in auto_load_connect: {str(e)}",exc_info=True,extra={'func_name': 'auto_load_connect'} )
             self.auto_load_btn.setEnabled(True)
+            self._set_tabs_locked(False)
             QMessageBox.critical(self, "Error", f"Auto load failed: {str(e)}")
         finally:
             # Only clean up here if the soemcompile thread was NOT started.
@@ -2646,6 +2650,7 @@ class TestStationInterface(QMainWindow):
             # is required.
             if not self._soem_thread_started:
                 self.auto_load_btn.setEnabled(True)
+                self._set_tabs_locked(False)
                 self.ssh_handler.SSH_disconnect()
 
     # ------------------------------------------------------------------ #
@@ -2691,6 +2696,7 @@ class TestStationInterface(QMainWindow):
         self.append_console_message(f"!!! ERROR !!!\n{error_msg}\n", is_error=True)
         self.logger.error(error_msg, extra={'func_name': 'soemcompile'})
         self.auto_load_btn.setEnabled(True)
+        self._set_tabs_locked(False)
         self.ssh_handler.SSH_disconnect()
         self._soem_thread_started = False
 
@@ -2778,6 +2784,7 @@ class TestStationInterface(QMainWindow):
             QMessageBox.critical(self, "Error", f"Auto load failed: {str(e)}")
         finally:
             self.auto_load_btn.setEnabled(True)
+            self._set_tabs_locked(False)
             self.ssh_handler.SSH_disconnect()
             self._soem_thread_started = False
 
@@ -2807,6 +2814,7 @@ class TestStationInterface(QMainWindow):
 
             # Start the thread
             self.worker.start()
+            self._set_tabs_locked(True)
 
         except Exception as e:
             self.append_dimm_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -2875,6 +2883,7 @@ class TestStationInterface(QMainWindow):
     def on_dimm_test_finished(self):
         self.dimm_timer.stop()
         self.dimm_start_button.setEnabled(True)
+        self._set_tabs_locked(False)
         if hasattr(self, 'worker') and self.worker:
             self.worker.stop()
 
@@ -3006,6 +3015,7 @@ class TestStationInterface(QMainWindow):
             )
 
             # Kick off with the first zone prompt
+            self._set_tabs_locked(True)
             self.show_zone_prompt(2)
 
         except Exception as e:
@@ -3039,10 +3049,13 @@ class TestStationInterface(QMainWindow):
             )
             self.worker.output_ready.connect(self.handle_BNC_output)
             self.worker.error_occurred.connect(self.handle_BNC_error)
+            self.worker.finished_signal.connect(lambda: self._set_tabs_locked(False))
             self.worker.start()
+            self._set_tabs_locked(True)
         else:
             self.append_BNC_message("Test cancelled by user", is_error=True)
             self.BNC_start_button.setEnabled(True)
+            self._set_tabs_locked(False)
             self.BNC_status_label_start.setText("● Cancelled")
             self.BNC_status_label_start.setStyleSheet("""
                 QLabel {
@@ -3223,6 +3236,7 @@ class TestStationInterface(QMainWindow):
             self.BNC_status_label_start.setText(status_text)
             self.BNC_status_label_start.setStyleSheet(status_style)
             self.BNC_start_button.setEnabled(True)
+            self._set_tabs_locked(False)
 
     def handle_BNC_output(self, line):
         """Handle a single line of output from the remote BNC test script.
@@ -3994,8 +4008,10 @@ class TestStationInterface(QMainWindow):
 
                 self.worker.output_ready.connect(self.handle_Zone_impedance_output)
                 self.worker.error_occurred.connect(self.handle_imp_error)
+                self.worker.finished_signal.connect(lambda: self._set_tabs_locked(False))
                 # Start the thread
                 self.worker.start()
+                self._set_tabs_locked(True)
                 self._log_Impedance_message(f"Starting measurement for {zone_name}")
             else:
                 self._log_Impedance_message(f"Impedance Scan {zone_name} suspended,is_error= True")
@@ -4333,8 +4349,10 @@ class TestStationInterface(QMainWindow):
 
                 self.worker.output_ready.connect(self.handle_Zone_output)
                 self.worker.error_occurred.connect(self.handle_res_error)
+                self.worker.finished_signal.connect(lambda: self._set_tabs_locked(False))
                 # Start the thread
                 self.worker.start()
+                self._set_tabs_locked(True)
                 self._log_resistance_message(f"Starting measurement for {zone_name}")
 
             else:
@@ -5205,6 +5223,7 @@ class TestStationInterface(QMainWindow):
             self._self_test_worker.error_occurred.connect(self._on_selftest_error)
 
             self.self_start_button.setEnabled(False)
+            self._set_tabs_locked(True)
             self.test_status_label_start.setText("● Running…")
             self.test_status_label_start.setStyleSheet(self._PILL_RUN_SS)
             self.append_self_message("\n==================Self Test Started=======================\n")
@@ -5230,6 +5249,7 @@ class TestStationInterface(QMainWindow):
         stderr = ""  # stderr is captured inside the Worker and emitted via error_occurred
         self.handle_self_test_output(stdout, stderr)
         self.self_start_button.setEnabled(True)
+        self._set_tabs_locked(False)
         self._self_test_worker = None
 
     def _on_selftest_error(self, error_msg):
@@ -5239,6 +5259,7 @@ class TestStationInterface(QMainWindow):
         self.test_status_label_start.setText("● Completed — FAIL")
         self.test_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
         self.self_start_button.setEnabled(True)
+        self._set_tabs_locked(False)
         self._self_test_worker = None
 
 
@@ -5286,6 +5307,7 @@ class TestStationInterface(QMainWindow):
 
             # Start the thread
             self.worker.start()
+            self._set_tabs_locked(True)
 
         except Exception as e:
             self.append_interlock_message(f"Failed to start test: {str(e)}", is_error=True)
@@ -5438,7 +5460,37 @@ class TestStationInterface(QMainWindow):
         finally:
             self.interlock_end_button.setEnabled(False)
             self.interlock_start_button.setEnabled(True)
+            self._set_tabs_locked(False)
 
+
+    # ------------------------------------------------------------------ #
+    # Tab-locking helpers                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _set_tabs_locked(self, locked):
+        """Disable/enable tabs while a test is in progress.
+
+        When *locked* is ``True`` every tab is disabled except the tab that
+        is currently visible and the RPI Console tab (so the operator can
+        still monitor the SSH console).  When *locked* is ``False`` all tabs
+        are re-enabled.
+        """
+        if not hasattr(self, 'tab_widget'):
+            return
+        # Resolve the RPI Console index robustly: prefer the stored attribute,
+        # fall back to a text-based search so the method stays correct if tab
+        # order ever changes.
+        rpi_idx = getattr(self, '_RPI_CONSOLE_TAB_INDEX', None)
+        if rpi_idx is None:
+            for i in range(self.tab_widget.count()):
+                if "RPI" in self.tab_widget.tabText(i) or "Console" in self.tab_widget.tabText(i):
+                    rpi_idx = i
+                    break
+            else:
+                rpi_idx = self.tab_widget.count() - 1
+        current = self.tab_widget.currentIndex()
+        for i in range(self.tab_widget.count()):
+            self.tab_widget.setTabEnabled(i, not locked or i == current or i == rpi_idx)
 
     def cleanup_resources(self):
         try:
@@ -5453,11 +5505,14 @@ class TestStationInterface(QMainWindow):
 
         except Exception as e:
             self.logger.error(f"Cleanup error: {str(e)}", exc_info=True, extra={'func_name': 'cleanup_resources'})
+        finally:
+            self._set_tabs_locked(False)
 
 
     def on_interlock_test_finished(self):
         """Clean up after test completion"""
         self.ssh_handler.SSH_disconnect()
+        self._set_tabs_locked(False)
         # self.ssh_status_label.setText("SSH: Disconnected")
         # self.ssh_status_label.setStyleSheet("background-color: #dc3545; color: white;")
 
