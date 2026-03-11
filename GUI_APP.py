@@ -4909,7 +4909,7 @@ class TestStationInterface(QMainWindow):
             control_layout = QHBoxLayout(control_panel)
             control_layout.setContentsMargins(12, 8, 12, 8)
 
-            self.frequencies = ["362.3 KHz", "400 KHz", "500 KHz", "50 MHz", "60 MHz", "70 MHz"]
+            self.frequencies = ["362.3 KHz", "120 KHz", "60 KHz"]
             freq_label = QLabel("Test Frequency:")
             freq_label.setFont(QFont('Arial', 10))
             self.freq_combo = QComboBox()
