@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QInputDialog, QFileDialog,
     QDialog, QListWidget, QListWidgetItem, QDialogButtonBox
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QObject, QDate, QThread, QTimer
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QDate, QThread, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtWidgets import QDateEdit
 import os
@@ -1896,6 +1896,103 @@ class TerminalWidget(QPlainTextEdit):
             self._send_fn(text)
 
 
+class AssemblySuffixErrorDialog(QDialog):
+    """
+    Animated error dialog shown when the assembly suffix is not set.
+    The dialog border pulses red to draw attention, then stays solid red until
+    the user dismisses it.  The test is expected to be stopped by the caller
+    before this dialog is displayed.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configuration Error — Test Stopped")
+        self.setModal(True)
+        self.setFixedWidth(480)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        # ── Base stylesheet (border colour is overridden by animation) ──────
+        self._base_style = (
+            "AssemblySuffixErrorDialog {"
+            "  background-color: #1a0a0a;"
+            "  border: 3px solid {border};"
+            "  border-radius: 10px;"
+            "}"
+        )
+        self._apply_border("#ff4444")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+
+        # ── Icon row ─────────────────────────────────────────────────────────
+        icon_label = QLabel("⛔")
+        icon_font = QFont("Segoe UI Emoji", 36)
+        icon_label.setFont(icon_font)
+        icon_label.setAlignment(Qt.AlignHCenter)
+        icon_label.setStyleSheet("color: #ff4444; background: transparent;")
+        layout.addWidget(icon_label)
+
+        # ── Title ─────────────────────────────────────────────────────────────
+        title = QLabel("Assembly Suffix Not Set — Test Stopped")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        title.setAlignment(Qt.AlignHCenter)
+        title.setWordWrap(True)
+        title.setStyleSheet("color: #ff6666; background: transparent;")
+        layout.addWidget(title)
+
+        # ── Body text ─────────────────────────────────────────────────────────
+        body = QLabel(
+            "The application cannot determine the configuration path because the "
+            "<b>Assembly Part Number</b> has not been entered or is not recognised.<br><br>"
+            "The current test has been <b>stopped automatically</b>.<br><br>"
+            "Please go to the <b>Unit&nbsp;Setup</b> tab, fill in all required fields "
+            "(Assembly Part Number, Serial Number, Revision, etc.), "
+            "and restart the test."
+        )
+        body.setFont(QFont("Arial", 9))
+        body.setWordWrap(True)
+        body.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        body.setStyleSheet("color: #dddddd; background: transparent;")
+        layout.addWidget(body)
+
+        # ── OK button ─────────────────────────────────────────────────────────
+        ok_btn = QPushButton("OK — Go to Unit Setup")
+        ok_btn.setFont(QFont("Arial", 9, QFont.Bold))
+        ok_btn.setFixedHeight(34)
+        ok_btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #8b0000;"
+            "  color: white;"
+            "  border: 1px solid #ff4444;"
+            "  border-radius: 5px;"
+            "  padding: 4px 16px;"
+            "}"
+            "QPushButton:hover { background-color: #b00000; }"
+            "QPushButton:pressed { background-color: #600000; }"
+        )
+        ok_btn.clicked.connect(self.accept)
+        layout.addWidget(ok_btn, alignment=Qt.AlignHCenter)
+
+        # ── Pulse animation: cycle border between bright-red and dark-red ─────
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(500)   # 0.5 s per half-cycle
+        self._pulse_state = True
+        self._pulse_timer.timeout.connect(self._tick_pulse)
+        self._pulse_timer.start()
+
+        # Stop animation after 3 s (6 ticks) so dialog settles on solid red
+        QTimer.singleShot(3000, self._pulse_timer.stop)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    def _apply_border(self, colour: str):
+        self.setStyleSheet(self._base_style.replace("{border}", colour))
+
+    def _tick_pulse(self):
+        self._pulse_state = not self._pulse_state
+        self._apply_border("#ff0000" if self._pulse_state else "#3a0000")
+
+
 class TestStationInterface(QMainWindow):
     # No-output idle watchdog timeout (milliseconds).  Change only here; the
     # error dialog text is derived from this value automatically.
@@ -2093,22 +2190,13 @@ class TestStationInterface(QMainWindow):
         except ValueError as e:
             self.logger.error(f"Error loading config: {str(e)}", exc_info=True,
                                extra={'func_name': 'load_config'})
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Warning)
-            msg.setWindowTitle("Configuration Error — Unit Setup Required")
-            msg.setText(
-                "<b>Assembly suffix is not set.</b><br><br>"
-                "The application cannot determine the configuration path because "
-                "the Assembly Part Number has not been entered or is unrecognised.<br><br>"
-                "Please go to the <b>Unit Setup</b> tab and fill in <b>all</b> required "
-                "details (Assembly Part Number, Serial Number, Revision, etc.) "
-                "before starting the test."
-            )
-            msg.setStandardButtons(QMessageBox.Ok)
-            msg.exec_()
+            # Show animated error dialog and stop the test
+            dlg = AssemblySuffixErrorDialog(self)
+            dlg.exec_()
             # Navigate the user directly to the Unit Setup tab (index 0)
             self.tab_widget.setCurrentIndex(0)
-            return {"expected_firmware_version": "0.0.0"}
+            # Return None so callers can detect the failure and abort
+            return None
         except Exception as e:
             self.logger.error(f"Error loading config: {str(e)}", exc_info=True,
                                extra={'func_name': 'load_config'})
@@ -3938,6 +4026,11 @@ class TestStationInterface(QMainWindow):
             table = self._measurement_tables.get(zone_name)
             self.config1 = self.load_config(self.assembly_suffix)
 
+            # If config could not be loaded (e.g. suffix missing), stop the test
+            if self.config1 is None:
+                self._abort_scan_missing_suffix(self._log_resistance_message, self.res_idle_timer)
+                return False
+
             if not table:
                 self._log_resistance_message(f"No table found for zone {zone_name}", is_error=True)
                 return False
@@ -4037,6 +4130,10 @@ class TestStationInterface(QMainWindow):
 
         try:
 
+            # Guard: abort immediately if assembly suffix is not set
+            if not self._check_assembly_suffix_or_abort():
+                return
+
             self.names1 = zone_name
             self.stop_increment = False
             selected_freq = self.freq_combo.currentText()
@@ -4125,6 +4222,26 @@ class TestStationInterface(QMainWindow):
             self.cleanup_resources()
 
 
+    def _abort_scan_missing_suffix(self, log_fn, idle_timer):
+        """Stop a running scan and show the animated error dialog when the
+        assembly suffix is not set.  *log_fn* is the scan-specific log helper
+        (e.g. self._log_Impedance_message) and *idle_timer* is the
+        corresponding QTimer."""
+        idle_timer.stop()
+        log_fn("Test stopped: assembly suffix not set.", is_error=True)
+        if hasattr(self, 'worker') and self.worker:
+            self.worker.stop()
+
+    def _check_assembly_suffix_or_abort(self) -> bool:
+        """Return True if the assembly suffix is set; otherwise show the
+        animated error dialog, navigate to Unit Setup, and return False."""
+        if not getattr(self, 'assembly_suffix', None):
+            dlg = AssemblySuffixErrorDialog(self)
+            dlg.exec_()
+            self.tab_widget.setCurrentIndex(0)
+            return False
+        return True
+
     def handle_imp_error(self, error_msg):
         self.imp_idle_timer.stop()
         self._log_Impedance_message(f"ERROR: {error_msg}", is_error=True)
@@ -4204,6 +4321,11 @@ class TestStationInterface(QMainWindow):
             # Find the table for this zone
             table = self._measurement_tables_imp.get(zone_name)
             self.config2 = self.load_config(self.assembly_suffix)
+
+            # If config could not be loaded (e.g. suffix missing), stop the test
+            if self.config2 is None:
+                self._abort_scan_missing_suffix(self._log_Impedance_message, self.imp_idle_timer)
+                return False
 
             if not table:
                 self._log_Impedance_message(f"No table found for zone {zone_name}", is_error=True)
@@ -4424,6 +4546,10 @@ class TestStationInterface(QMainWindow):
 
     def _start_resistance_zone_measurement(self, zone_name):
         try:
+            # Guard: abort immediately if assembly suffix is not set
+            if not self._check_assembly_suffix_or_abort():
+                return
+
             self.names = zone_name
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Information)
