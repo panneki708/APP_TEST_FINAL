@@ -1256,7 +1256,7 @@ class Worker(QThread):
             while self._is_running:
                 line = stdout.readline()
                 self.logger3.info(f"{self.script_path} {self.command} {line}")
-                if not line and self.command != "dimm":
+                if not line:
                     break
                 if self._is_running == False:
                     break
@@ -2038,19 +2038,14 @@ class TestStationInterface(QMainWindow):
         self.closed_count = 0
         self.logger = logger.getChild('TestStationInterface')
         self.check_true = 0
-        self.dimm_timer = QTimer()
         self.vna_timer = QTimer()
         self.vna_timer.timeout.connect(self.update_vna_progress)
-        self.dimm_timer.timeout.connect(self.update_dimm_progress)
         self.bnc_idle_timer = QTimer()
         self.bnc_idle_timer.setSingleShot(True)
         self.bnc_idle_timer.timeout.connect(self._on_bnc_idle_timeout)
         self.vna_idle_timer = QTimer()
         self.vna_idle_timer.setSingleShot(True)
         self.vna_idle_timer.timeout.connect(self._on_vna_idle_timeout)
-        self.dimm_idle_timer = QTimer()
-        self.dimm_idle_timer.setSingleShot(True)
-        self.dimm_idle_timer.timeout.connect(self._on_dimm_idle_timeout)
         self.imp_idle_timer = QTimer()
         self.imp_idle_timer.setSingleShot(True)
         self.imp_idle_timer.timeout.connect(self._on_imp_idle_timeout)
@@ -2060,7 +2055,6 @@ class TestStationInterface(QMainWindow):
         self.interlock_idle_timer = QTimer()
         self.interlock_idle_timer.setSingleShot(True)
         self.interlock_idle_timer.timeout.connect(self._on_interlock_idle_timeout)
-        self.dimm_progress_value = 0
         self.vna_progress_value = 0
         self.names = ''
         self.unit_test = 0
@@ -2069,7 +2063,6 @@ class TestStationInterface(QMainWindow):
         self.Res_scan = 0
         self.bnc_t = 0
         self.VNA_c = 0
-        self.DIMM_CAL = 0
         self.interlock_t = 0
         self.step_no = 0
         self.resistance_test = 'PASS'
@@ -2237,26 +2230,11 @@ class TestStationInterface(QMainWindow):
             self.append_console_message("Failed to create OTP file ",is_error= True)
             raise IOError(f"Failed to create OTP file {fname}") from e
 
-    def start_dimm_progress(self):
-        """Start the 12-second progress timer"""
-        self.dimm_progress_value = 0
-        self.dimm_progress.setValue(0)
-        self.dimm_timer.start(130)  # 120ms interval for 12 seconds (100*120ms=12s)
-
     def start_vna_progress(self):
         """Start the 12-second progress timer"""
         self.vna_progress_value = 0
         self.vna_progress.setValue(0)
-        self.vna_timer.start(1800)  # 1800ms interval for 180 seconds (100*1800ms=12s)
-
-    def update_dimm_progress(self):
-        """Update progress bar incrementally"""
-        self.dimm_progress_value += 1
-        self.dimm_progress.setValue(self.dimm_progress_value)
-
-        if self.dimm_progress_value >= 100:
-            self.dimm_timer.stop()
-            self.dimm_progress.setValue(100)
+        self.vna_timer.start(1800)  # 1800ms interval for 180 seconds (100*1800ms=180s)
 
     def update_vna_progress(self):
         """Update progress bar incrementally"""
@@ -2938,168 +2916,8 @@ class TestStationInterface(QMainWindow):
             self.ssh_handler.SSH_disconnect()
             self._soem_thread_started = False
 
-    def dimm_cal_test(self):
-        try:
-
-            if hasattr(self, 'worker') and self.worker:
-                self.worker.stop()
-
-            # Reset UI state
-            self.dimmtest_console.clear()
-            self.DIMM_status_label_start.setText('● Running…')
-            self.DIMM_status_label_start.setStyleSheet(self._PILL_RUN_SS)
-            self.start_dimm_progress()
-            self.dimm_start_button.setEnabled(False)
-
-            self.append_dimm_message("\n================== Dimm Test Started =======================\n")
-
-            self.worker = Worker(
-                self.ssh_handler,
-                '/home/robot/Manufacturing_test/aipc_beta/dimmcalibration.py',
-                'dimm'
-            )
-            self.worker.output_ready.connect(self.handle_dimm_output)
-            self.worker.finished_signal.connect(self.on_dimm_test_finished)
-            self.worker.error_occurred.connect(self.handle_dimm_error)
-
-            # Start the thread
-            self.worker.start()
-            self._set_tabs_locked(True)
-            self.dimm_idle_timer.start(self._IDLE_TIMEOUT_MS)
-
-        except Exception as e:
-            self.append_dimm_message(f"Failed to start test: {str(e)}", is_error=True)
-            self.cleanup_resources()
-
-    def handle_dimm_output(self, line):
-        try:
-            # Reset the 5-minute idle watchdog on every received line
-            self.dimm_idle_timer.start(self._IDLE_TIMEOUT_MS)
-            if "no ping" in line:
-                self.append_dimm_message(f"DIMM not connected to the Network", is_error=True)
-                self.dimm_timer.stop()
-                self.dimm_idle_timer.stop()
-                self.worker.stop()
-                self.dimm_start_button.setEnabled(True)
-
-            if "mailbox error" in line.lower():
-                self.append_dimm_message(
-                    "Mailbox Error on Ethercat please check the Ethercat Data or Contact Support Team",
-                    is_error=True
-                )
-                self.dimm_timer.stop()
-                self.dimm_idle_timer.stop()
-                self.worker.stop()
-                self.dimm_start_button.setEnabled(True)
-                return
-
-            if "Calibration Pass" in line:
-                self.DIMM_status_label_start.setText('● Completed — PASS')
-                self.DIMM_status_label_start.setStyleSheet(self._PILL_PASS_SS)
-                self.append_dimm_message("\n=== DIMM Calibration PASSED ===")
-
-                # Log to Excel
-                """ 
-                unit_identifier = f"{self.assembly_pn_input.text().strip()} ({self.assembly_sn_input.text().strip()})"
-                self.excel_logger.log_self_test(
-                    unit_identifier=unit_identifier,
-                    test_passed=True,
-                    test_details="DIMM Calibration",
-                    notes=line
-                )"""
-                self.dimm_timer.stop()
-                self.dimm_idle_timer.stop()
-                self.worker.stop()
-                self.dimm_start_button.setEnabled(True)
-
-            elif "Calibration Fail" in line:
-                self.DIMM_status_label_start.setText('● Completed — FAIL')
-                self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
-                self.append_dimm_message("\n!!! DIMM Calibration FAILED !!!", is_error=True)
-
-                # Log to Excel
-                """
-                unit_identifier = f"{self.assembly_pn_input.text().strip()} ({self.assembly_sn_input.text().strip()})"
-                self.excel_logger.log_self_test(
-                    unit_identifier=unit_identifier,
-                    test_passed=False,
-                    test_details="DIMM Calibration",
-                    notes=line
-                )"""
-                self.dimm_timer.stop()
-                self.dimm_idle_timer.stop()
-                self.worker.stop()
-                self.dimm_start_button.setEnabled(True)
-
-
-        except Exception as e:
-            self.append_dimm_message(f"Error processing output: {str(e)}", is_error=True)
-            self.dimm_start_button.setEnabled(True)
-
-
-    def _on_dimm_idle_timeout(self):
-        """Called when no output line has been received from the DIMM script for 2 minutes."""
-        self.append_dimm_message(
-            "=== ERROR: No data from Raspberry Pi — EtherCAT data broken. Please contact support team. ===",
-            is_error=True,
-        )
-        self._show_idle_timeout_error("DIMM Calibration")
-        self.dimm_timer.stop()
-        self.worker.stop()
-        self.DIMM_status_label_start.setText('● Failed')
-        self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
-        self.dimm_start_button.setEnabled(True)
-        self._set_tabs_locked(False)
-
-    def on_dimm_test_finished(self):
-        self.dimm_timer.stop()
-        self.dimm_idle_timer.stop()
-        self.dimm_start_button.setEnabled(True)
-        self._set_tabs_locked(False)
-        if hasattr(self, 'worker') and self.worker:
-            self.worker.stop()
-
-        # If test didn't explicitly pass or fail, mark it as incomplete
-        if "Passed" not in self.DIMM_status_label_start.text() and "Failed" not in self.DIMM_status_label_start.text():
-            self.DIMM_status_label_start.setText('● Incomplete')
-            self.DIMM_status_label_start.setStyleSheet(self._PILL_GRAY_SS)
-            self.append_dimm_message("\n!!! Test did not complete properly !!!", is_error=True)
-
-
-    def handle_dimm_error(self, error_msg):
-        self.dimm_timer.stop()
-        self.dimm_idle_timer.stop()
-        self.cleanup_resources()
-        self.append_dimm_message(f"\n!!! ERROR: {error_msg} !!!", is_error=True)
-        self.DIMM_status_label_start.setText('● Error')
-        self.DIMM_status_label_start.setStyleSheet(self._PILL_FAIL_SS)
-        self.dimm_start_button.setEnabled(True)
-
-        # Log to Excel
-        unit_identifier = f"{self.assembly_pn_input.text().strip()} ({self.assembly_sn_input.text().strip()})"
-        self.excel_logger.log_self_test(
-            unit_identifier=unit_identifier,
-            test_passed=False,
-            test_details="DIMM Calibration Error",
-            notes=error_msg
-        )
-
-
-    def append_dimm_message(self, message, is_error=False):
-        """Helper method to append colored messages to DIMM console"""
-        if hasattr(self, 'dimmtest_console') and self.dimmtest_console is not None:
-            if is_error:
-                self.dimmtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
-            else:
-                self.dimmtest_console.append(f'<span style="color:#3fb950; font-weight:bold;">{message}</span>')
-
-            # Auto-scroll to bottom
-            self.dimmtest_console.verticalScrollBar().setValue(
-                self.dimmtest_console.verticalScrollBar().maximum()
-            )
-
     def append_vna_message(self, message, is_error=False):
-        """Helper method to append colored messages to DIMM console"""
+        """Helper method to append colored messages to VNA console"""
         if hasattr(self, 'VNAtest_console') and self.VNAtest_console is not None:
             if is_error:
                 self.VNAtest_console.append(f'<span style="color:#f85149; font-weight:bold;">{message}</span>')
@@ -5184,33 +5002,6 @@ class TestStationInterface(QMainWindow):
 
             test_layout.addWidget(resistance_widget)
 
-        elif title == "DIMM Calibration":
-            # ── Header banner ──────────────────────────────────────────────
-            test_layout.addWidget(self._make_tab_header(
-                "DIMM Calibration",
-                "Runs the DIMM calibration sequence via the remote calibration script.",
-                "#E65100", "#F57C00"
-            ))
-
-            # ── Controls row ───────────────────────────────────────────────
-            self.DIMM_status_label_start = self._make_status_pill("● Test: Ready")
-            self.dimm_start_button = self._make_action_button(
-                "▶  Start Calibration", self._BTN_GREEN_SS
-            )
-            self.dimm_start_button.clicked.connect(self.dimm_cal_test)
-            test_layout.addLayout(
-                self._make_controls_row(self.DIMM_status_label_start, self.dimm_start_button)
-            )
-
-            # ── Progress bar ───────────────────────────────────────────────
-            self.dimm_progress = self._make_styled_progress("%p% complete")
-            test_layout.addWidget(self.dimm_progress)
-
-            # ── Console ────────────────────────────────────────────────────
-            test_layout.addWidget(self._make_console_header("  Calibration Output"))
-            self.dimmtest_console = self._make_dark_console()
-            test_layout.addWidget(self.dimmtest_console)
-
         elif title == "VNA Calibration":
             # ── Header banner ──────────────────────────────────────────────
             test_layout.addWidget(self._make_tab_header(
@@ -6499,7 +6290,6 @@ class TestStationInterface(QMainWindow):
         self.tab_widget.addTab(self.create_test_tab("Impedance Scan"), "Impedance Scan")
         self.tab_widget.addTab(self.create_test_tab("Resistance Test"), "Resistance")
         self.tab_widget.addTab(self.create_test_tab("System Self Test"), "Self Test")
-        self.tab_widget.addTab(self.create_test_tab("DIMM Calibration"), "DIMM Cal")
         self.tab_widget.addTab(self.create_test_tab("VNA Calibration"), "VNA Cal")
         self.tab_widget.addTab(self.create_ssh_console_tab(), "RPI Console")
 
