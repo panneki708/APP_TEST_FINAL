@@ -4411,11 +4411,11 @@ class TestStationInterface(QMainWindow):
                 status_item.setFont(QFont('Arial', 9, QFont.Bold))
 
                 if status == "PASS":
-                    status_item.setBackground(QColor(0, 160, 0))    # Bright green
-                    status_item.setForeground(QColor(255, 255, 255)) # White text
+                    status_item.setBackground(QColor(10, 30, 10))    # Dark green tint
+                    status_item.setForeground(QColor(0, 230, 118))   # Bright green text
                 else:
-                    status_item.setBackground(QColor(210, 30, 30))   # Bright red
-                    status_item.setForeground(QColor(255, 255, 255)) # White text
+                    status_item.setBackground(QColor(30, 10, 10))    # Dark red tint
+                    status_item.setForeground(QColor(255, 82, 82))   # Bright red text
 
                 table.setItem(row_index, 4, status_item)
 
@@ -4571,11 +4571,11 @@ class TestStationInterface(QMainWindow):
                 status_item.setFont(QFont('Arial', 9, QFont.Bold))
 
                 if status == "PASS":
-                    status_item.setBackground(QColor(0, 160, 0))    # Bright green
-                    status_item.setForeground(QColor(255, 255, 255)) # White text
+                    status_item.setBackground(QColor(10, 30, 10))    # Dark green tint
+                    status_item.setForeground(QColor(0, 230, 118))   # Bright green text
                 else:
-                    status_item.setBackground(QColor(210, 30, 30))   # Bright red
-                    status_item.setForeground(QColor(255, 255, 255)) # White text
+                    status_item.setBackground(QColor(30, 10, 10))    # Dark red tint
+                    status_item.setForeground(QColor(255, 82, 82))   # Bright red text
 
                 table.setItem(row_index, 2, status_item)
 
