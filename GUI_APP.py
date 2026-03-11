@@ -2090,8 +2090,26 @@ class TestStationInterface(QMainWindow):
                 raise ValueError("Assembly suffix is not set; cannot determine config path.")
             with open(rf'C:\Config\{suffix}\config.json') as f:
                 return json.load(f)
+        except ValueError as e:
+            self.logger.error(f"Error loading config: {str(e)}", exc_info=True,
+                               extra={'func_name': 'load_config'})
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Configuration Error — Unit Setup Required")
+            msg.setText(
+                "<b>Assembly suffix is not set.</b><br><br>"
+                "The application cannot determine the configuration path because "
+                "the Assembly Part Number has not been entered or is unrecognised.<br><br>"
+                "Please go to the <b>Unit Setup</b> tab and fill in <b>all</b> required "
+                "details (Assembly Part Number, Serial Number, Revision, etc.) "
+                "before starting the test."
+            )
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec_()
+            # Navigate the user directly to the Unit Setup tab (index 0)
+            self.tab_widget.setCurrentIndex(0)
+            return {"expected_firmware_version": "0.0.0"}
         except Exception as e:
-            # logger.error(f"Error loading config: {str(e)}")
             self.logger.error(f"Error loading config: {str(e)}", exc_info=True,
                                extra={'func_name': 'load_config'})
 
@@ -4389,13 +4407,15 @@ class TestStationInterface(QMainWindow):
                 # Update status with appropriate coloring
                 status_item = QTableWidgetItem(status)
                 status_item.setFlags(status_item.flags() ^ Qt.ItemIsEditable)
+                # Bold font so PASS/FAIL is clearly readable on the dark background
+                status_item.setFont(QFont('Arial', 9, QFont.Bold))
 
                 if status == "PASS":
-                    status_item.setBackground(QColor(220, 255, 220))  # Light green
-                    status_item.setForeground(QColor(0, 128, 0))  # Dark green text
+                    status_item.setBackground(QColor(0, 160, 0))    # Bright green
+                    status_item.setForeground(QColor(255, 255, 255)) # White text
                 else:
-                    status_item.setBackground(QColor(255, 220, 220))  # Light red
-                    status_item.setForeground(QColor(139, 0, 0))  # Dark red text
+                    status_item.setBackground(QColor(210, 30, 30))   # Bright red
+                    status_item.setForeground(QColor(255, 255, 255)) # White text
 
                 table.setItem(row_index, 4, status_item)
 
@@ -4547,13 +4567,15 @@ class TestStationInterface(QMainWindow):
                 # Update status with appropriate coloring
                 status_item = QTableWidgetItem(status)
                 status_item.setFlags(status_item.flags() ^ Qt.ItemIsEditable)
+                # Bold font so PASS/FAIL is clearly readable on the dark background
+                status_item.setFont(QFont('Arial', 9, QFont.Bold))
 
                 if status == "PASS":
-                    status_item.setBackground(QColor(220, 255, 220))  # Light green
-                    status_item.setForeground(QColor(0, 128, 0))  # Dark green text
+                    status_item.setBackground(QColor(0, 160, 0))    # Bright green
+                    status_item.setForeground(QColor(255, 255, 255)) # White text
                 else:
-                    status_item.setBackground(QColor(255, 220, 220))  # Light red
-                    status_item.setForeground(QColor(139, 0, 0))  # Dark red text
+                    status_item.setBackground(QColor(210, 30, 30))   # Bright red
+                    status_item.setForeground(QColor(255, 255, 255)) # White text
 
                 table.setItem(row_index, 2, status_item)
 
