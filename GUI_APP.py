@@ -2148,18 +2148,53 @@ class TestStationInterface(QMainWindow):
             return False
 
 
-        # Initialize SSH client
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(host, username=username, password=password)
+        ssh = None
+        sftp = None
+        try:
+            # Initialize SSH client
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(host, username=username, password=password)
 
-        # Transfer file using SFTP
-        sftp = ssh.open_sftp()
-        sftp.put(local_file, remote_file)
-        sftp.put(local_file1, remote_file1)
-        sftp.close()
-        ssh.close()
-        return True
+            # Transfer file using SFTP
+            sftp = ssh.open_sftp()
+            # Ensure remote files are writable before uploading (they may have
+            # been left read-only by a previous run or by manual chmod on the Pi).
+            for remote_path in (remote_file, remote_file1):
+                try:
+                    sftp.chmod(remote_path, 0o644)
+                except Exception:
+                    pass  # File may not exist yet – ignore
+            sftp.put(local_file, remote_file)
+            sftp.put(local_file1, remote_file1)
+            return True
+        except PermissionError as e:
+            error_msg = (
+                f"Permission denied when uploading config files to RPI.\n"
+                f"Please ensure the robot user has write access to the remote "
+                f"config directory on the Pi.\nDetails: {e}"
+            )
+            self.append_console_message(error_msg + "\n", is_error=True)
+            self.logger.error(error_msg, extra={'func_name': 'config_transfer'})
+            QMessageBox.critical(self, "Config Transfer Error", error_msg)
+            return False
+        except Exception as e:
+            error_msg = f"Failed to transfer config files to RPI: {e}"
+            self.append_console_message(error_msg + "\n", is_error=True)
+            self.logger.error(error_msg, extra={'func_name': 'config_transfer'})
+            QMessageBox.critical(self, "Config Transfer Error", error_msg)
+            return False
+        finally:
+            if sftp is not None:
+                try:
+                    sftp.close()
+                except Exception as e:
+                    self.logger.warning(f"SFTP close error: {e}", extra={'func_name': 'config_transfer'})
+            if ssh is not None:
+                try:
+                    ssh.close()
+                except Exception as e:
+                    self.logger.warning(f"SSH close error: {e}", extra={'func_name': 'config_transfer'})
 
     def _extract_assembly_suffix(self, assembly_part_number):
         """
