@@ -17,6 +17,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject, QDate, QThread, QTimer, QPrope
 from PyQt5.QtGui import QFont, QTextCursor, QColor
 from PyQt5.QtWidgets import QDateEdit
 import os
+import shlex
 import stat
 import shutil
 import logging
@@ -2156,15 +2157,19 @@ class TestStationInterface(QMainWindow):
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(host, username=username, password=password)
 
-            # Transfer file using SFTP
+            # Ensure remote files are writable before uploading.  They may have
+            # been left read-only by a previous run or by a root-owned process
+            # on the Pi.  Use a shell command so the operation succeeds even
+            # when the file is not owned by the robot user (e.g. root-created).
+            # The command is intentionally non-fatal: if chmod is not needed
+            # (file absent, or already writable) we proceed anyway.
+            _, stdout, _ = ssh.exec_command(
+                f"chmod 644 {shlex.quote(remote_file)} {shlex.quote(remote_file1)} 2>/dev/null; true"
+            )
+            stdout.channel.recv_exit_status()  # wait for completion
+
+            # Transfer files using SFTP
             sftp = ssh.open_sftp()
-            # Ensure remote files are writable before uploading (they may have
-            # been left read-only by a previous run or by manual chmod on the Pi).
-            for remote_path in (remote_file, remote_file1):
-                try:
-                    sftp.chmod(remote_path, 0o644)
-                except Exception:
-                    pass  # File may not exist yet – ignore
             sftp.put(local_file, remote_file)
             sftp.put(local_file1, remote_file1)
             return True
